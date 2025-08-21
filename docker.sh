@@ -63,17 +63,13 @@ update_container() {
 
     echo "✅ 选中容器: $CNAME (镜像: $IMAGE)"
     echo "📦 获取容器配置..."
-    
+
     CONFIG=$(docker inspect "$CID")
-    
+
     # 提取必要信息
     NETWORK=$(echo "$CONFIG" | jq -r '.[0].HostConfig.NetworkMode')
     RESTART_POLICY=$(echo "$CONFIG" | jq -r '.[0].HostConfig.RestartPolicy.Name')
     ORIGINAL_CMD=$(echo "$CONFIG" | jq -r '.[0].Config.Cmd | if . then join(" ") else "" end')
-    if [ -z "$ORIGINAL_CMD" ] || [ "$ORIGINAL_CMD" == "null" ]; then
-        ORIGINAL_CMD=$(echo "$CONFIG" | jq -r '.[0].Config.Entrypoint | if . then join(" ") else "" end')
-    fi
-
     VOLUMES=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Binds[]?' 2>/dev/null)
     PORTS=$(echo "$CONFIG" | jq -r '.[0].HostConfig.PortBindings | to_entries[]? | "\(.key | split("/")[0]):\(.value[0].HostPort)"' 2>/dev/null)
     ENV_VARS=$(echo "$CONFIG" | jq -r '.[0].Config.Env[]?' 2>/dev/null)
@@ -156,6 +152,7 @@ update_container() {
         [ $? -eq 0 ] && echo "✅ 容器 $CNAME 已用简化方式启动！" || echo "❌ 容器启动仍失败，请手动检查"
     fi
 }
+
 
 # 停止容器
 stop_container() {
