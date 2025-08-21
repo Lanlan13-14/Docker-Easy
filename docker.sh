@@ -138,6 +138,22 @@ uninstall_script() {
     fi
 }
 
+# 更新脚本
+update_script() {
+    echo "⬇️ 正在更新 docker-easy 脚本..."
+    SCRIPT_URL="https://raw.githubusercontent.com/Lanlan13-14/Docker-Easy/refs/heads/main/docker.sh"
+    tmpfile=$(mktemp)
+    if curl -fsSL "$SCRIPT_URL" -o "$tmpfile"; then
+        chmod +x "$tmpfile"
+        sudo mv "$tmpfile" "$SCRIPT_PATH"
+        echo "✅ docker-easy 脚本已更新完成！"
+        echo "下次使用请输入: sudo docker-easy"
+    else
+        echo "❌ 更新失败，请检查网络或链接是否有效"
+        rm -f "$tmpfile"
+    fi
+}
+
 # 主菜单
 menu() {
     check_jq
@@ -152,6 +168,7 @@ menu() {
         echo "6. 删除镜像"
         echo "7. Docker 服务管理"
         echo "8. 卸载脚本"
+        echo "9. 更新 docker-easy 脚本"
         echo "0. 退出"
         echo "================================"
         read -p "请选择操作: " choice
@@ -164,6 +181,7 @@ menu() {
             6) remove_image ;;
             7) docker_service ;;
             8) uninstall_script ;;
+            9) update_script ;;
             0) 
                 echo "👋 已退出 docker-easy，下次使用请输入: sudo docker-easy"
                 exit 0 ;;
@@ -171,3 +189,5 @@ menu() {
         esac
     done
 }
+
+menu
