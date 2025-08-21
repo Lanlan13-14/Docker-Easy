@@ -115,49 +115,62 @@ update_container() {
         done <<< "$ENV_VARS"
     fi
 
-    # 获取原始命令
-    ORIGINAL_CMD=$(echo "$CONFIG" | jq -r '.[0].Config.Cmd | join(" ")')
+    # 获取原始命令（正确处理数组格式）
+    ORIGINAL_CMD=$(echo "$CONFIG" | jq -r '.[0].Config.Cmd | if . then join(" ") else "" end')
     if [ -z "$ORIGINAL_CMD" ] || [ "$ORIGINAL_CMD" == "null" ]; then
-        ORIGINAL_CMD=$(echo "$CONFIG" | jq -r '.[0].Config.Entrypoint | join(" ")')
+        ORIGINAL_CMD=$(echo "$CONFIG" | jq -r '.[0].Config.Entrypoint | if . then join(" ") else "" end')
     fi
 
-    # 添加镜像和命令
+    # 添加镜像
     RUN_CMD="$RUN_CMD \"$IMAGE\""
-    if [ -n "$ORIGINAL_CMD" ] && [ "$ORIGINAL_CMD" != "null" ]; then
-        RUN_CMD="$RUN_CMD $ORIGINAL_CMD"
-    fi
 
     echo "🛑 停止并删除旧容器..."
     docker stop "$CID" 2>/dev/null
     docker rm "$CID" 2>/dev/null
 
     echo "🚀 使用新镜像启动容器..."
-    echo "执行命令: $RUN_CMD"
-    eval "$RUN_CMD"
-
-    if [ $? -eq 0 ]; then
-        echo "✅ 容器 $CNAME 已更新完成！"
-    else
-        echo "❌ 容器启动失败，尝试使用更简单的方法重新创建..."
-        # 清理失败的容器
-        docker rm -f "$CNAME" 2>/dev/null
+    
+    # 如果有复杂的命令（包含分号或其他特殊字符），使用更安全的方式
+    if [[ "$ORIGINAL_CMD" == *";"* ]] || [[ "$ORIGINAL_CMD" == *"&"* ]] || [[ "$ORIGINAL_CMD" == *"|"* ]]; then
+        echo "检测到复杂命令，使用安全方式启动..."
+        # 创建临时文件来存储docker run命令
+        TEMP_SCRIPT=$(mktemp)
+        cat > "$TEMP_SCRIPT" << EOF
+#!/bin/bash
+docker run -d \\
+  --name "$CNAME" \\
+  $( [ "$NETWORK" != "default" ] && [ "$NETWORK" != "bridge" ] && echo "--network \"$NETWORK\"" ) \\
+  $( [ "$RESTART_POLICY" != "no" ] && echo "--restart \"$RESTART_POLICY\"" ) \\
+  $(echo "$CONFIG" | jq -r '.[0].HostConfig.Binds[]?' 2>/dev/null | while read -r vol; do echo "  -v \"$vol\""; done) \\
+  $(echo "$CONFIG" | jq -r '.[0].HostConfig.PortBindings | to_entries[]? | "  -p \(.value[0].HostPort):\(.key | split("/")[0])"' 2>/dev/null) \\
+  $(echo "$CONFIG" | jq -r '.[0].Config.Env[]?' 2>/dev/null | while read -r env; do echo "  -e \"$env\""; done) \\
+  "$IMAGE" \\
+  $ORIGINAL_CMD
+EOF
         
-        # 使用 docker commit 的方式获取原始命令
-        echo "尝试使用原始配置重新创建..."
-        docker run -d \
-            $(echo "$CONFIG" | jq -r '.[0].HostConfig.Binds[]?' | while read -r vol; do echo "-v \"$vol\""; done) \
-            $(echo "$CONFIG" | jq -r '.[0].HostConfig.PortBindings | to_entries[]? | "-p \(.value[0].HostPort):\(.key | split("/")[0])"') \
-            $(echo "$CONFIG" | jq -r '.[0].Config.Env[]?' | while read -r env; do echo "-e \"$env\""; done) \
-            --name "$CNAME" \
-            --network "$NETWORK" \
-            --restart "$RESTART_POLICY" \
-            "$IMAGE" \
-            $ORIGINAL_CMD
+        chmod +x "$TEMP_SCRIPT"
+        "$TEMP_SCRIPT"
+        RM_RESULT=$?
+        rm -f "$TEMP_SCRIPT"
+        
+        if [ $RM_RESULT -eq 0 ]; then
+            echo "✅ 容器 $CNAME 已更新完成！"
+        else
+            echo "❌ 容器启动失败"
+        fi
+    else
+        # 简单命令直接执行
+        if [ -n "$ORIGINAL_CMD" ] && [ "$ORIGINAL_CMD" != "null" ]; then
+            RUN_CMD="$RUN_CMD $ORIGINAL_CMD"
+        fi
+        
+        echo "执行命令: $RUN_CMD"
+        eval "$RUN_CMD"
         
         if [ $? -eq 0 ]; then
-            echo "✅ 容器 $CNAME 已成功启动！"
+            echo "✅ 容器 $CNAME 已更新完成！"
         else
-            echo "❌ 容器启动仍然失败，请手动检查配置"
+            echo "❌ 容器启动失败"
         fi
     fi
 }
