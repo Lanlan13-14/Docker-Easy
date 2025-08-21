@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# docker-easy: Docker 容器管理工具
+
+docker-easy: Docker 容器管理工具
 
 SCRIPT_PATH="/usr/local/bin/docker-easy"
 
+# 检查 jq 依赖
 check_jq() {
     if ! command -v jq &>/dev/null; then
         echo "⚠️ 缺少依赖: jq"
@@ -24,6 +26,7 @@ check_jq() {
     fi
 }
 
+# 安装或更新 Docker
 install_docker() {
     echo "⚡ 将通过 Docker 官方脚本安装/更新 Docker"
     echo "是否继续？(y/n)"
@@ -37,83 +40,7 @@ install_docker() {
     fi
 }
 
-build_docker_run_cmd() {
-    local CID="$1"
-    local CONFIG=$(docker inspect "$CID")
-
-    local CNAME=$(echo "$CONFIG" | jq -r '.[0].Name' | sed 's#^/##')
-    local IMAGE=$(echo "$CONFIG" | jq -r '.[0].Config.Image')
-
-    local CMD="docker run -d --name \"$CNAME\""
-
-    # 网络
-    local NETWORK=$(echo "$CONFIG" | jq -r '.[0].HostConfig.NetworkMode')
-    if [[ "$NETWORK" != "default" && "$NETWORK" != "bridge" ]]; then
-        CMD="$CMD --network \"$NETWORK\""
-    fi
-
-    # 重启策略
-    local RESTART_POLICY=$(echo "$CONFIG" | jq -r '.[0].HostConfig.RestartPolicy.Name')
-    if [[ "$RESTART_POLICY" != "no" ]]; then
-        CMD="$CMD --restart \"$RESTART_POLICY\""
-    fi
-
-    # 用户
-    local USER=$(echo "$CONFIG" | jq -r '.[0].Config.User')
-    [[ -n "$USER" && "$USER" != "null" ]] && CMD="$CMD --user \"$USER\""
-
-    # 工作目录
-    local WORKDIR=$(echo "$CONFIG" | jq -r '.[0].Config.WorkingDir')
-    [[ -n "$WORKDIR" && "$WORKDIR" != "null" ]] && CMD="$CMD -w \"$WORKDIR\""
-
-    # CapAdd
-    local CAPS=$(echo "$CONFIG" | jq -r '.[0].HostConfig.CapAdd[]?' 2>/dev/null)
-    while read -r cap; do [[ -n "$cap" ]] && CMD="$CMD --cap-add $cap"; done <<< "$CAPS"
-
-    # Devices
-    local DEVS=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Devices[]? | "--device \(.PathOnHost):\(.PathInContainer)"' 2>/dev/null)
-    [[ -n "$DEVS" ]] && CMD="$CMD $DEVS"
-
-    # Extra Hosts
-    local HOSTS=$(echo "$CONFIG" | jq -r '.[0].HostConfig.ExtraHosts[]?' 2>/dev/null)
-    while read -r host; do [[ -n "$host" ]] && CMD="$CMD --add-host $host"; done <<< "$HOSTS"
-
-    # Log Options
-    local LOG_OPTS=$(echo "$CONFIG" | jq -r '.[0].HostConfig.LogConfig.Config | to_entries[]? | "--log-opt \(.key)=\(.value)"' 2>/dev/null)
-    [[ -n "$LOG_OPTS" ]] && CMD="$CMD $LOG_OPTS"
-
-    # ShmSize
-    local SHM_SIZE=$(echo "$CONFIG" | jq -r '.[0].HostConfig.ShmSize')
-    [[ "$SHM_SIZE" != "null" && "$SHM_SIZE" -gt 0 ]] && CMD="$CMD --shm-size ${SHM_SIZE}b"
-
-    # Ulimits
-    local ULIMITS=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Ulimits[]? | "--ulimit \(.Name)=\(.Soft):\(.Hard)"' 2>/dev/null)
-    [[ -n "$ULIMITS" ]] && CMD="$CMD $ULIMITS"
-
-    # Volumes
-    local VOLS=$(echo "$CONFIG" | jq -r '.[0].Mounts[]? | "-v \(.Source):\(.Destination)"' 2>/dev/null)
-    [[ -n "$VOLS" ]] && CMD="$CMD $VOLS"
-
-    # 端口映射
-    local PORTS=$(echo "$CONFIG" | jq -r '.[0].HostConfig.PortBindings | to_entries[]? | "-p \(.value[0].HostPort):\(.key | split("/")[0])"' 2>/dev/null)
-    [[ -n "$PORTS" ]] && CMD="$CMD $PORTS"
-
-    # 环境变量
-    local ENVS=$(echo "$CONFIG" | jq -r '.[0].Config.Env[]?' 2>/dev/null | sed 's/^/-e /' | tr '\n' ' ')
-    [[ -n "$ENVS" ]] && CMD="$CMD $ENVS"
-
-    # 镜像
-    CMD="$CMD \"$IMAGE\""
-
-    # Entrypoint & Cmd
-    local EP=$(echo "$CONFIG" | jq -r '.[0].Config.Entrypoint | join(" ")')
-    [[ -n "$EP" && "$EP" != "null" ]] && CMD="$CMD $EP"
-    local CMDS=$(echo "$CONFIG" | jq -r '.[0].Config.Cmd | join(" ")')
-    [[ -n "$CMDS" && "$CMDS" != "null" ]] && CMD="$CMD $CMDS"
-
-    echo "$CMD"
-}
-
+# 更新容器
 update_container() {
     if ! command -v docker &>/dev/null; then
         echo "❌ 未检测到 docker，请先安装"
@@ -138,19 +65,132 @@ update_container() {
     echo "⬇️ 正在拉取最新镜像..."
     docker pull "$IMAGE"
 
+    echo "📦 备份容器配置..."
+    CONFIG=$(docker inspect "$CID")
+
+    # 获取容器运行参数
+    NETWORK=$(echo "$CONFIG" | jq -r '.[0].HostConfig.NetworkMode')
+    RESTART_POLICY=$(echo "$CONFIG" | jq -r '.[0].HostConfig.RestartPolicy.Name')
+    
+    # 获取原始命令
+    ORIGINAL_CMD=$(echo "$CONFIG" | jq -r '.[0].Config.Cmd | if . then join(" ") else "" end')
+    if [ -z "$ORIGINAL_CMD" ] || [ "$ORIGINAL_CMD" == "null" ]; then
+        ORIGINAL_CMD=$(echo "$CONFIG" | jq -r '.[0].Config.Entrypoint | if . then join(" ") else "" end')
+    fi
+
     echo "🛑 停止并删除旧容器..."
     docker stop "$CID" 2>/dev/null
     docker rm "$CID" 2>/dev/null
 
     echo "🚀 使用新镜像启动容器..."
-    DOCKER_CMD=$(build_docker_run_cmd "$CID")
+    
+    # 直接使用docker run命令，不使用复杂的构建过程
+    DOCKER_CMD="docker run -d --name \"$CNAME\""
+    
+    # 添加网络模式
+    if [ "$NETWORK" != "default" ] && [ "$NETWORK" != "bridge" ]; then
+        DOCKER_CMD="$DOCKER_CMD --network \"$NETWORK\""
+    fi
+
+    # 添加重启策略
+    if [ "$RESTART_POLICY" != "no" ]; then
+        DOCKER_CMD="$DOCKER_CMD --restart \"$RESTART_POLICY\""
+    fi
+
+    # 添加卷挂载
+    VOLUMES=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Binds[]?' 2>/dev/null)
+    if [ -n "$VOLUMES" ]; then
+        while IFS= read -r volume; do
+            DOCKER_CMD="$DOCKER_CMD -v \"$volume\""
+        done <<< "$VOLUMES"
+    fi
+
+    # 添加端口映射
+    PORTS=$(echo "$CONFIG" | jq -r '.[0].HostConfig.PortBindings | to_entries[]? | "\(.key | split("/")[0]):\(.value[0].HostPort)"' 2>/dev/null)
+    if [ -n "$PORTS" ]; then
+        while IFS= read -r port; do
+            container_port=$(echo "$port" | cut -d: -f1)
+            host_port=$(echo "$port" | cut -d: -f2)
+            DOCKER_CMD="$DOCKER_CMD -p \"$host_port:$container_port\""
+        done <<< "$PORTS"
+    fi
+
+    # 添加环境变量
+    ENV_VARS=$(echo "$CONFIG" | jq -r '.[0].Config.Env[]?' 2>/dev/null)
+    if [ -n "$ENV_VARS" ]; then
+        while IFS= read -r env_var; do
+            DOCKER_CMD="$DOCKER_CMD -e \"$env_var\""
+        done <<< "$ENV_VARS"
+    fi
+
+    # 添加其他参数
+    # 1. 添加设备映射
+    DEVICES=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Devices[]?.PathOnHost+":"+.PathInContainer+":"+.CgroupPermissions' 2>/dev/null)
+    if [ -n "$DEVICES" ]; then
+        while IFS= read -r device; do
+            DOCKER_CMD="$DOCKER_CMD --device \"$device\""
+        done <<< "$DEVICES"
+    fi
+
+    # 2. 添加特权模式
+    PRIVILEGED=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Privileged')
+    if [ "$PRIVILEGED" = "true" ]; then
+        DOCKER_CMD="$DOCKER_CMD --privileged"
+    fi
+
+    # 3. 添加用户
+    USER=$(echo "$CONFIG" | jq -r '.[0].Config.User')
+    if [ -n "$USER" ] && [ "$USER" != "null" ]; then
+        DOCKER_CMD="$DOCKER_CMD --user \"$USER\""
+    fi
+
+    # 4. 添加工作目录
+    WORKING_DIR=$(echo "$CONFIG" | jq -r '.[0].Config.WorkingDir')
+    if [ -n "$WORKING_DIR" ] && [ "$WORKING_DIR" != "null" ]; then
+        DOCKER_CMD="$DOCKER_CMD -w \"$WORKING_DIR\""
+    fi
+
+    # 5. 添加额外的主机映射
+    EXTRA_HOSTS=$(echo "$CONFIG" | jq -r '.[0].HostConfig.ExtraHosts[]?' 2>/dev/null)
+    if [ -n "$EXTRA_HOSTS" ]; then
+        while IFS= read -r extra_host; do
+            DOCKER_CMD="$DOCKER_CMD --add-host \"$extra_host\""
+        done <<< "$EXTRA_HOSTS"
+    fi
+
+    # 添加镜像和命令
+    DOCKER_CMD="$DOCKER_CMD \"$IMAGE\""
+    if [ -n "$ORIGINAL_CMD" ] && [ "$ORIGINAL_CMD" != "null" ]; then
+        DOCKER_CMD="$DOCKER_CMD $ORIGINAL_CMD"
+    fi
+
+    echo "执行命令: $DOCKER_CMD"
     eval "$DOCKER_CMD"
 
     if [ $? -eq 0 ]; then
         echo "✅ 容器 $CNAME 已更新完成！"
     else
-        echo "❌ 容器启动失败，请检查命令:"
-        echo "$DOCKER_CMD"
+        echo "❌ 容器启动失败，尝试使用更简单的方式启动..."
+        # 尝试使用更简单的方式启动容器
+        SIMPLE_CMD="docker run -d --name \"$CNAME\" --restart \"$RESTART_POLICY\""
+        if [ -n "$VOLUMES" ]; then
+            while IFS= read -r volume; do
+                SIMPLE_CMD="$SIMPLE_CMD -v \"$volume\""
+            done <<< "$VOLUMES"
+        fi
+        SIMPLE_CMD="$SIMPLE_CMD \"$IMAGE\""
+        if [ -n "$ORIGINAL_CMD" ] && [ "$ORIGINAL_CMD" != "null" ]; then
+            SIMPLE_CMD="$SIMPLE_CMD $ORIGINAL_CMD"
+        fi
+        
+        echo "尝试执行简化命令: $SIMPLE_CMD"
+        eval "$SIMPLE_CMD"
+        
+        if [ $? -eq 0 ]; then
+            echo "✅ 容器 $CNAME 已使用简化方式启动完成！"
+        else
+            echo "❌ 容器启动仍然失败，请手动检查配置"
+        fi
     fi
 }
 
