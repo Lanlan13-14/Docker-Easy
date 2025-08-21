@@ -10,3 +10,6 @@ sudo docker-easy
 ```
 ### 3. 卸载
 ##### 卸载选项在脚本中已提供
+
+### 特别感谢
+[Runlike](https://github.com/lavie/runlike)
