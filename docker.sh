@@ -71,7 +71,7 @@ update_container() {
     NETWORK=$(echo "$CONFIG" | jq -r '.[0].HostConfig.NetworkMode')
     RESTART_POLICY=$(echo "$CONFIG" | jq -r '.[0].HostConfig.RestartPolicy.Name')
     
-    # 获取原始命令（正确处理数组格式）
+    # 获取原始命令
     ORIGINAL_CMD=$(echo "$CONFIG" | jq -r '.[0].Config.Cmd | if . then join(" ") else "" end')
     if [ -z "$ORIGINAL_CMD" ] || [ "$ORIGINAL_CMD" == "null" ]; then
         ORIGINAL_CMD=$(echo "$CONFIG" | jq -r '.[0].Config.Entrypoint | if . then join(" ") else "" end')
@@ -83,7 +83,7 @@ update_container() {
 
     echo "🚀 使用新镜像启动容器..."
     
-    # 构建docker run命令的基本部分
+    # 构建docker run命令
     DOCKER_CMD="docker run -d --name \"$CNAME\""
     
     # 添加网络模式
@@ -96,7 +96,7 @@ update_container() {
         DOCKER_CMD="$DOCKER_CMD --restart \"$RESTART_POLICY\""
     fi
 
-    # 添加卷挂载（不使用引号包裹）
+    # 添加卷挂载
     VOLUMES=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Binds[]?' 2>/dev/null)
     if [ -n "$VOLUMES" ]; then
         while IFS= read -r volume; do
@@ -104,7 +104,7 @@ update_container() {
         done <<< "$VOLUMES"
     fi
 
-    # 添加端口映射（不使用引号包裹）
+    # 添加端口映射
     PORTS=$(echo "$CONFIG" | jq -r '.[0].HostConfig.PortBindings | to_entries[]? | "\(.key | split("/")[0]):\(.value[0].HostPort)"' 2>/dev/null)
     if [ -n "$PORTS" ]; then
         while IFS= read -r port; do
@@ -114,7 +114,7 @@ update_container() {
         done <<< "$PORTS"
     fi
 
-    # 添加环境变量（不使用引号包裹）
+    # 添加环境变量
     ENV_VARS=$(echo "$CONFIG" | jq -r '.[0].Config.Env[]?' 2>/dev/null)
     if [ -n "$ENV_VARS" ]; then
         while IFS= read -r env_var; do
@@ -125,14 +125,9 @@ update_container() {
     # 添加镜像
     DOCKER_CMD="$DOCKER_CMD \"$IMAGE\""
 
-    # 如果有复杂的命令（包含分号或其他特殊字符），使用sh -c包装
-    if [[ "$ORIGINAL_CMD" == *";"* ]] || [[ "$ORIGINAL_CMD" == *"&"* ]] || [[ "$ORIGINAL_CMD" == *"|"* ]]; then
-        DOCKER_CMD="$DOCKER_CMD /bin/sh -c \"$ORIGINAL_CMD\""
-    else
-        # 简单命令直接添加
-        if [ -n "$ORIGINAL_CMD" ] && [ "$ORIGINAL_CMD" != "null" ]; then
-            DOCKER_CMD="$DOCKER_CMD $ORIGINAL_CMD"
-        fi
+    # 添加命令
+    if [ -n "$ORIGINAL_CMD" ] && [ "$ORIGINAL_CMD" != "null" ]; then
+        DOCKER_CMD="$DOCKER_CMD $ORIGINAL_CMD"
     fi
 
     echo "执行命令: $DOCKER_CMD"
@@ -141,49 +136,8 @@ update_container() {
     if [ $? -eq 0 ]; then
         echo "✅ 容器 $CNAME 已更新完成！"
     else
-        echo "❌ 容器启动失败，尝试使用docker commit方式..."
-        
-        # 清理失败的容器
-        docker rm -f "$CNAME" 2>/dev/null
-        
-        # 使用更简单的方法
-        echo "尝试简化启动..."
-        SIMPLE_CMD="docker run -d --name \"$CNAME\" --restart \"$RESTART_POLICY\""
-        
-        # 只添加必要的卷挂载和端口
-        if [ -n "$VOLUMES" ]; then
-            while IFS= read -r volume; do
-                SIMPLE_CMD="$SIMPLE_CMD -v $volume"
-            done <<< "$VOLUMES"
-        fi
-        
-        if [ -n "$PORTS" ]; then
-            while IFS= read -r port; do
-                container_port=$(echo "$port" | cut -d: -f1)
-                host_port=$(echo "$port" | cut -d: -f2)
-                SIMPLE_CMD="$SIMPLE_CMD -p $host_port:$container_port"
-            done <<< "$PORTS"
-        fi
-        
-        # 只添加必要的环境变量
-        ESSENTIAL_ENV_VARS=$(echo "$ENV_VARS" | grep -E "(SUB_STORE|PATH|NODE|TIME_ZONE)" || echo "$ENV_VARS" | head -5)
-        if [ -n "$ESSENTIAL_ENV_VARS" ]; then
-            while IFS= read -r env_var; do
-                SIMPLE_CMD="$SIMPLE_CMD -e $env_var"
-            done <<< "$ESSENTIAL_ENV_VARS"
-        fi
-        
-        SIMPLE_CMD="$SIMPLE_CMD \"$IMAGE\""
-        
-        echo "执行简化命令: $SIMPLE_CMD"
-        eval "$SIMPLE_CMD"
-        
-        if [ $? -eq 0 ]; then
-            echo "✅ 容器 $CNAME 已成功启动！"
-        else
-            echo "❌ 容器启动仍然失败，请手动检查配置"
-            echo "建议手动执行: docker run -d --name \"$CNAME\" --restart \"$RESTART_POLICY\" -v /etc/sub-store:/opt/app/data -p 3001:3001 \"$IMAGE\""
-        fi
+        echo "❌ 容器启动失败"
+        echo "请手动检查容器配置或使用 docker logs $CNAME 查看错误信息"
     fi
 }
 
