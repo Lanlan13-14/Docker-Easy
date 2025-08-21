@@ -41,7 +41,7 @@ install_docker() {
 }
 
 # 更新容器
-update_container() {
+update_container_smart() {
     if ! command -v docker &>/dev/null; then
         echo "❌ 未检测到 docker，请先安装"
         return
@@ -60,8 +60,9 @@ update_container() {
 
     CNAME=$(docker inspect --format='{{.Name}}' "$CID" | sed 's/^\/\(.*\)/\1/')
     IMAGE=$(docker inspect --format='{{.Config.Image}}' "$CID")
-    echo "✅ 选中容器: $CNAME (镜像: $IMAGE)"
+    CONFIG=$(docker inspect "$CID")
 
+    echo "✅ 选中容器: $CNAME (镜像: $IMAGE)"
     echo "⬇️ 拉取最新镜像..."
     docker pull "$IMAGE"
 
@@ -70,21 +71,22 @@ update_container() {
     docker rm "$CID" 2>/dev/null
 
     echo "🚀 使用新镜像启动容器..."
-    CONFIG=$(docker inspect "$CID")
 
     DOCKER_CMD="docker run -d --name \"$CNAME\""
 
-    NETWORK=$(echo "$CONFIG" | jq -r '.[0].HostConfig.NetworkMode')
-    [ "$NETWORK" != "default" ] && [ "$NETWORK" != "bridge" ] && DOCKER_CMD="$DOCKER_CMD --network \"$NETWORK\""
+    # 重启策略
+    RESTART_POLICY=$(echo "$CONFIG" | jq -r '.[0].HostConfig.RestartPolicy.Name // empty')
+    [ -n "$RESTART_POLICY" ] && DOCKER_CMD="$DOCKER_CMD --restart \"$RESTART_POLICY\""
 
-    RESTART_POLICY=$(echo "$CONFIG" | jq -r '.[0].HostConfig.RestartPolicy.Name')
-    [ "$RESTART_POLICY" != "no" ] && DOCKER_CMD="$DOCKER_CMD --restart \"$RESTART_POLICY\""
+    # 网络模式
+    NETWORK=$(echo "$CONFIG" | jq -r '.[0].HostConfig.NetworkMode // empty')
+    [ -n "$NETWORK" ] && [ "$NETWORK" != "default" ] && DOCKER_CMD="$DOCKER_CMD --network \"$NETWORK\""
 
-    # 卷挂载
-    VOLUMES=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Binds[]?' 2>/dev/null)
+    # 卷绑定
+    VOLUMES=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Binds[]? // empty')
     if [ -n "$VOLUMES" ]; then
         while IFS= read -r volume; do
-            DOCKER_CMD="$DOCKER_CMD -v \"$volume\""
+            [ -n "$volume" ] && DOCKER_CMD="$DOCKER_CMD -v \"$volume\""
         done <<< "$VOLUMES"
     fi
 
@@ -92,48 +94,51 @@ update_container() {
     PORTS=$(echo "$CONFIG" | jq -r '.[0].HostConfig.PortBindings | to_entries[]? | "\(.value[0].HostPort):\(.key | split("/")[0])"' 2>/dev/null)
     if [ -n "$PORTS" ]; then
         while IFS= read -r port; do
-            host_port=$(echo "$port" | cut -d: -f1)
-            container_port=$(echo "$port" | cut -d: -f2)
-            DOCKER_CMD="$DOCKER_CMD -p \"$host_port:$container_port\""
+            [ -n "$port" ] && DOCKER_CMD="$DOCKER_CMD -p \"$port\""
         done <<< "$PORTS"
     fi
 
     # 环境变量
-    ENV_VARS=$(echo "$CONFIG" | jq -r '.[0].Config.Env[]?' 2>/dev/null)
+    ENV_VARS=$(echo "$CONFIG" | jq -r '.[0].Config.Env[]? // empty')
     if [ -n "$ENV_VARS" ]; then
         while IFS= read -r env_var; do
-            DOCKER_CMD="$DOCKER_CMD -e \"$env_var\""
+            [ -n "$env_var" ] && DOCKER_CMD="$DOCKER_CMD -e \"$env_var\""
         done <<< "$ENV_VARS"
     fi
 
-    # 设备、工作目录、用户、特权
-    DEVICES=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Devices[]?.PathOnHost+":"+.PathInContainer+":"+.CgroupPermissions' 2>/dev/null)
+    # 工作目录
+    WORKDIR=$(echo "$CONFIG" | jq -r '.[0].Config.WorkingDir // empty')
+    [ -n "$WORKDIR" ] && DOCKER_CMD="$DOCKER_CMD -w \"$WORKDIR\""
+
+    # 用户
+    USER=$(echo "$CONFIG" | jq -r '.[0].Config.User // empty')
+    [ -n "$USER" ] && DOCKER_CMD="$DOCKER_CMD --user \"$USER\""
+
+    # 特权模式
+    PRIVILEGED=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Privileged // empty')
+    [ "$PRIVILEGED" = "true" ] && DOCKER_CMD="$DOCKER_CMD --privileged"
+
+    # 设备挂载
+    DEVICES=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Devices[]? | "\(.PathOnHost):\(.PathInContainer):\(.CgroupPermissions)"' 2>/dev/null)
     if [ -n "$DEVICES" ]; then
         while IFS= read -r device; do
-            DOCKER_CMD="$DOCKER_CMD --device \"$device\""
+            [ -n "$device" ] && DOCKER_CMD="$DOCKER_CMD --device \"$device\""
         done <<< "$DEVICES"
     fi
 
-    PRIVILEGED=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Privileged')
-    [ "$PRIVILEGED" = "true" ] && DOCKER_CMD="$DOCKER_CMD --privileged"
-
-    USER=$(echo "$CONFIG" | jq -r '.[0].Config.User')
-    [ -n "$USER" ] && [ "$USER" != "null" ] && DOCKER_CMD="$DOCKER_CMD --user \"$USER\""
-
-    WORKING_DIR=$(echo "$CONFIG" | jq -r '.[0].Config.WorkingDir')
-    [ -n "$WORKING_DIR" ] && [ "$WORKING_DIR" != "null" ] && DOCKER_CMD="$DOCKER_CMD -w \"$WORKING_DIR\""
-
-    EXTRA_HOSTS=$(echo "$CONFIG" | jq -r '.[0].HostConfig.ExtraHosts[]?' 2>/dev/null)
-    if [ -n "$EXTRA_HOSTS" ]; then
-        while IFS= read -r extra_host; do
-            DOCKER_CMD="$DOCKER_CMD --add-host \"$extra_host\""
-        done <<< "$EXTRA_HOSTS"
-    fi
-
+    # 原始 CMD
+    ORIGINAL_CMD=$(echo "$CONFIG" | jq -r '.[0].Config.Cmd | if . then join(" ") else empty end')
     DOCKER_CMD="$DOCKER_CMD \"$IMAGE\""
+    [ -n "$ORIGINAL_CMD" ] && DOCKER_CMD="$DOCKER_CMD $ORIGINAL_CMD"
 
     echo "执行命令: $DOCKER_CMD"
-    eval "$DOCKER_CMD" && echo "✅ 容器 $CNAME 已更新完成！"
+    eval "$DOCKER_CMD"
+
+    if [ $? -eq 0 ]; then
+        echo "✅ 容器 $CNAME 已成功更新！"
+    else
+        echo "❌ 容器启动失败，请检查配置"
+    fi
 }
 
 
