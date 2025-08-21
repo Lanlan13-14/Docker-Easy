@@ -141,7 +141,6 @@ update_container() {
     fi
 }
 
-
 # 停止容器
 stop_container() {
     docker ps --format "table {{.ID}}\t{{.Names}}"
