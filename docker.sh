@@ -58,39 +58,29 @@ update_container() {
         return
     fi
 
+    # 获取容器基本信息
     CNAME=$(docker inspect --format='{{.Name}}' "$CID" | sed 's/^\/\(.*\)/\1/')
     IMAGE=$(docker inspect --format='{{.Config.Image}}' "$CID")
-
-    echo "✅ 选中容器: $CNAME (镜像: $IMAGE)"
-    echo "📦 获取容器配置..."
-
     CONFIG=$(docker inspect "$CID")
 
-    # 提取必要信息
-    NETWORK=$(echo "$CONFIG" | jq -r '.[0].HostConfig.NetworkMode')
+    # 提取必要参数
     RESTART_POLICY=$(echo "$CONFIG" | jq -r '.[0].HostConfig.RestartPolicy.Name')
-    ORIGINAL_CMD=$(echo "$CONFIG" | jq -r '.[0].Config.Cmd | if . then join(" ") else "" end')
     VOLUMES=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Binds[]?' 2>/dev/null)
-    PORTS=$(echo "$CONFIG" | jq -r '.[0].HostConfig.PortBindings | to_entries[]? | "\(.key | split("/")[0]):\(.value[0].HostPort)"' 2>/dev/null)
+    PORTS=$(echo "$CONFIG" | jq -r '.[0].HostConfig.PortBindings | to_entries[]? | "\(.value[0].HostPort):\(.key | split("/")[0])"' 2>/dev/null)
     ENV_VARS=$(echo "$CONFIG" | jq -r '.[0].Config.Env[]?' 2>/dev/null)
-    DEVICES=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Devices[]?.PathOnHost+":"+.PathInContainer+":"+.CgroupPermissions' 2>/dev/null)
-    PRIVILEGED=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Privileged')
-    USER=$(echo "$CONFIG" | jq -r '.[0].Config.User')
-    WORKING_DIR=$(echo "$CONFIG" | jq -r '.[0].Config.WorkingDir')
-    EXTRA_HOSTS=$(echo "$CONFIG" | jq -r '.[0].HostConfig.ExtraHosts[]?' 2>/dev/null)
+    NETWORK=$(echo "$CONFIG" | jq -r '.[0].HostConfig.NetworkMode')
 
     echo "⬇️ 拉取最新镜像..."
     docker pull "$IMAGE"
 
-    echo "🛑 停止并删除旧容器..."
+    echo "🛑 停止旧容器..."
     docker stop "$CID" 2>/dev/null
     docker rm "$CID" 2>/dev/null
 
-    echo "🚀 使用新镜像启动容器..."
+    # 构建新容器命令，只保留必要参数
     DOCKER_CMD="docker run -d --name \"$CNAME\""
-
-    [ "$NETWORK" != "default" ] && [ "$NETWORK" != "bridge" ] && DOCKER_CMD="$DOCKER_CMD --network \"$NETWORK\""
     [ "$RESTART_POLICY" != "no" ] && DOCKER_CMD="$DOCKER_CMD --restart \"$RESTART_POLICY\""
+    [ "$NETWORK" != "default" ] && [ "$NETWORK" != "bridge" ] && DOCKER_CMD="$DOCKER_CMD --network \"$NETWORK\""
 
     if [ -n "$VOLUMES" ]; then
         while IFS= read -r volume; do
@@ -100,36 +90,20 @@ update_container() {
 
     if [ -n "$PORTS" ]; then
         while IFS= read -r port; do
-            container_port=$(echo "$port" | cut -d: -f1)
-            host_port=$(echo "$port" | cut -d: -f2)
+            host_port=$(echo "$port" | cut -d: -f1)
+            container_port=$(echo "$port" | cut -d: -f2)
             DOCKER_CMD="$DOCKER_CMD -p \"$host_port:$container_port\""
         done <<< "$PORTS"
     fi
 
     if [ -n "$ENV_VARS" ]; then
-        while IFS= read -r env_var; do
-            DOCKER_CMD="$DOCKER_CMD -e \"$env_var\""
+        while IFS= read -r env; do
+            DOCKER_CMD="$DOCKER_CMD -e \"$env\""
         done <<< "$ENV_VARS"
     fi
 
-    if [ -n "$DEVICES" ]; then
-        while IFS= read -r device; do
-            DOCKER_CMD="$DOCKER_CMD --device \"$device\""
-        done <<< "$DEVICES"
-    fi
-
-    [ "$PRIVILEGED" = "true" ] && DOCKER_CMD="$DOCKER_CMD --privileged"
-    [ -n "$USER" ] && [ "$USER" != "null" ] && DOCKER_CMD="$DOCKER_CMD --user \"$USER\""
-    [ -n "$WORKING_DIR" ] && [ "$WORKING_DIR" != "null" ] && DOCKER_CMD="$DOCKER_CMD -w \"$WORKING_DIR\""
-
-    if [ -n "$EXTRA_HOSTS" ]; then
-        while IFS= read -r extra_host; do
-            DOCKER_CMD="$DOCKER_CMD --add-host \"$extra_host\""
-        done <<< "$EXTRA_HOSTS"
-    fi
-
+    # 最终镜像，不带额外命令，保持镜像自带 CMD/ENTRYPOINT
     DOCKER_CMD="$DOCKER_CMD \"$IMAGE\""
-    [ -n "$ORIGINAL_CMD" ] && [ "$ORIGINAL_CMD" != "null" ] && DOCKER_CMD="$DOCKER_CMD $ORIGINAL_CMD"
 
     echo "执行命令: $DOCKER_CMD"
     eval "$DOCKER_CMD"
@@ -137,19 +111,7 @@ update_container() {
     if [ $? -eq 0 ]; then
         echo "✅ 容器 $CNAME 已成功更新！"
     else
-        echo "⚠️ 更新失败，尝试简化启动..."
-        SIMPLE_CMD="docker run -d --name \"$CNAME\" --restart \"$RESTART_POLICY\""
-        if [ -n "$VOLUMES" ]; then
-            while IFS= read -r volume; do
-                SIMPLE_CMD="$SIMPLE_CMD -v \"$volume\""
-            done <<< "$VOLUMES"
-        fi
-        SIMPLE_CMD="$SIMPLE_CMD \"$IMAGE\""
-        [ -n "$ORIGINAL_CMD" ] && [ "$ORIGINAL_CMD" != "null" ] && SIMPLE_CMD="$SIMPLE_CMD $ORIGINAL_CMD"
-        echo "执行简化命令: $SIMPLE_CMD"
-        eval "$SIMPLE_CMD"
-
-        [ $? -eq 0 ] && echo "✅ 容器 $CNAME 已用简化方式启动！" || echo "❌ 容器启动仍失败，请手动检查"
+        echo "❌ 容器更新失败，请手动检查"
     fi
 }
 
