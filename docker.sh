@@ -67,17 +67,76 @@ update_container() {
     echo "📦 备份容器配置..."
     CONFIG=$(docker inspect "$CID")
 
-    docker stop "$CID"
-    docker rm "$CID"
+    # 获取容器运行参数
+    NETWORK=$(echo "$CONFIG" | jq -r '.[0].HostConfig.NetworkMode')
+    RESTART_POLICY=$(echo "$CONFIG" | jq -r '.[0].HostConfig.RestartPolicy.Name')
+    
+    # 构建运行命令
+    RUN_CMD="docker run -d --name \"$CNAME\""
+
+    # 添加网络模式
+    if [ "$NETWORK" != "default" ]; then
+        RUN_CMD="$RUN_CMD --network \"$NETWORK\""
+    fi
+
+    # 添加重启策略
+    if [ "$RESTART_POLICY" != "no" ]; then
+        MAX_RETRIES=$(echo "$CONFIG" | jq -r '.[0].HostConfig.RestartPolicy.MaximumRetryCount')
+        if [ "$MAX_RETRIES" -gt 0 ]; then
+            RUN_CMD="$RUN_CMD --restart \"$RESTART_POLICY:$MAX_RETRIES\""
+        else
+            RUN_CMD="$RUN_CMD --restart \"$RESTART_POLICY\""
+        fi
+    fi
+
+    # 添加卷挂载
+    VOLUMES=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Binds[]?' 2>/dev/null)
+    if [ -n "$VOLUMES" ]; then
+        while IFS= read -r volume; do
+            RUN_CMD="$RUN_CMD -v \"$volume\""
+        done <<< "$VOLUMES"
+    fi
+
+    # 添加端口映射
+    PORTS=$(echo "$CONFIG" | jq -r '.[0].HostConfig.PortBindings | to_entries[]? | "\(.key | split("/")[0]):\(.value[0].HostPort)"' 2>/dev/null)
+    if [ -n "$PORTS" ]; then
+        while IFS= read -r port; do
+            container_port=$(echo "$port" | cut -d: -f1)
+            host_port=$(echo "$port" | cut -d: -f2)
+            RUN_CMD="$RUN_CMD -p \"$host_port:$container_port\""
+        done <<< "$PORTS"
+    fi
+
+    # 添加环境变量
+    ENV_VARS=$(echo "$CONFIG" | jq -r '.[0].Config.Env[]?' 2>/dev/null)
+    if [ -n "$ENV_VARS" ]; then
+        while IFS= read -r env_var; do
+            RUN_CMD="$RUN_CMD -e \"$env_var\""
+        done <<< "$ENV_VARS"
+    fi
+
+    # 添加镜像和命令
+    CMD=$(echo "$CONFIG" | jq -r '.[0].Config.Cmd[]?' | tr '\n' ' ')
+    RUN_CMD="$RUN_CMD \"$IMAGE\" $CMD"
+
+    echo "🛑 停止并删除旧容器..."
+    docker stop "$CID" 2>/dev/null
+    docker rm "$CID" 2>/dev/null
 
     echo "🚀 使用新镜像启动容器..."
-    docker run -d $(echo "$CONFIG" | jq -r '.[0].HostConfig.Binds[]?' | sed 's/^/-v /') \
-        $(echo "$CONFIG" | jq -r '.[0].HostConfig.PortBindings | to_entries[]? | "-p \(.value[0].HostPort):\(.key | split("/")[0])"') \
-        $(echo "$CONFIG" | jq -r '.[0].Config.Env[]?' | sed 's/^/-e /') \
-        --name "$CNAME" "$IMAGE" \
-        $(echo "$CONFIG" | jq -r '.[0].Config.Cmd[]?')
+    echo "执行命令: $RUN_CMD"
+    eval "$RUN_CMD"
 
-    echo "✅ 容器 $CNAME 已更新完成！"
+    if [ $? -eq 0 ]; then
+        echo "✅ 容器 $CNAME 已更新完成！"
+    else
+        echo "❌ 容器启动失败，尝试使用原始配置重新创建..."
+        docker run -d $(echo "$CONFIG" | jq -r '.[0].HostConfig.Binds[]?' | while read -r vol; do echo "-v \"$vol\""; done) \
+            $(echo "$CONFIG" | jq -r '.[0].HostConfig.PortBindings | to_entries[]? | "-p \(.value[0].HostPort):\(.key | split("/")[0])"') \
+            $(echo "$CONFIG" | jq -r '.[0].Config.Env[]?' | while read -r env; do echo "-e \"$env\""; done) \
+            --name "$CNAME" --network "$NETWORK" --restart "$RESTART_POLICY" \
+            "$IMAGE" $(echo "$CONFIG" | jq -r '.[0].Config.Cmd[]?')
+    fi
 }
 
 # 停止容器
