@@ -60,17 +60,7 @@ update_container() {
 
     CNAME=$(docker inspect --format='{{.Name}}' "$CID" | sed 's/^\/\(.*\)/\1/')
     IMAGE=$(docker inspect --format='{{.Config.Image}}' "$CID")
-    CONFIG=$(docker inspect "$CID")
-
-    # 提取必要参数
-    NETWORK=$(echo "$CONFIG" | jq -r '.[0].HostConfig.NetworkMode')
-    RESTART_POLICY=$(echo "$CONFIG" | jq -r '.[0].HostConfig.RestartPolicy.Name')
-    ENV_VARS=$(echo "$CONFIG" | jq -r '.[0].Config.Env[]?' 2>/dev/null)
-    VOLUMES=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Binds[]?' 2>/dev/null)
-    PORTS=$(echo "$CONFIG" | jq -r '.[0].HostConfig.PortBindings | to_entries[]? | "\(.key | split("/")[0]):\(.value[0].HostPort)"' 2>/dev/null)
-    USER=$(echo "$CONFIG" | jq -r '.[0].Config.User')
-    WORKING_DIR=$(echo "$CONFIG" | jq -r '.[0].Config.WorkingDir')
-    ORIGINAL_CMD=$(echo "$CONFIG" | jq -r '.[0].Config.Cmd | if . then join(" ") else "" end')
+    echo "✅ 选中容器: $CNAME (镜像: $IMAGE)"
 
     echo "⬇️ 拉取最新镜像..."
     docker pull "$IMAGE"
@@ -80,21 +70,70 @@ update_container() {
     docker rm "$CID" 2>/dev/null
 
     echo "🚀 使用新镜像启动容器..."
+    CONFIG=$(docker inspect "$CID")
+
     DOCKER_CMD="docker run -d --name \"$CNAME\""
-    [ "$RESTART_POLICY" != "no" ] && DOCKER_CMD="$DOCKER_CMD --restart \"$RESTART_POLICY\""
+
+    NETWORK=$(echo "$CONFIG" | jq -r '.[0].HostConfig.NetworkMode')
     [ "$NETWORK" != "default" ] && [ "$NETWORK" != "bridge" ] && DOCKER_CMD="$DOCKER_CMD --network \"$NETWORK\""
 
-    [ -n "$ENV_VARS" ] && while IFS= read -r env; do DOCKER_CMD="$DOCKER_CMD -e \"$env\""; done <<< "$ENV_VARS"
-    [ -n "$VOLUMES" ] && while IFS= read -r vol; do DOCKER_CMD="$DOCKER_CMD -v \"$vol\""; done <<< "$VOLUMES"
-    [ -n "$PORTS" ] && while IFS= read -r port; do host=$(echo "$port" | cut -d: -f2); container=$(echo "$port" | cut -d: -f1); DOCKER_CMD="$DOCKER_CMD -p \"$host:$container\""; done <<< "$PORTS"
+    RESTART_POLICY=$(echo "$CONFIG" | jq -r '.[0].HostConfig.RestartPolicy.Name')
+    [ "$RESTART_POLICY" != "no" ] && DOCKER_CMD="$DOCKER_CMD --restart \"$RESTART_POLICY\""
+
+    # 卷挂载
+    VOLUMES=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Binds[]?' 2>/dev/null)
+    if [ -n "$VOLUMES" ]; then
+        while IFS= read -r volume; do
+            DOCKER_CMD="$DOCKER_CMD -v \"$volume\""
+        done <<< "$VOLUMES"
+    fi
+
+    # 端口映射
+    PORTS=$(echo "$CONFIG" | jq -r '.[0].HostConfig.PortBindings | to_entries[]? | "\(.value[0].HostPort):\(.key | split("/")[0])"' 2>/dev/null)
+    if [ -n "$PORTS" ]; then
+        while IFS= read -r port; do
+            host_port=$(echo "$port" | cut -d: -f1)
+            container_port=$(echo "$port" | cut -d: -f2)
+            DOCKER_CMD="$DOCKER_CMD -p \"$host_port:$container_port\""
+        done <<< "$PORTS"
+    fi
+
+    # 环境变量
+    ENV_VARS=$(echo "$CONFIG" | jq -r '.[0].Config.Env[]?' 2>/dev/null)
+    if [ -n "$ENV_VARS" ]; then
+        while IFS= read -r env_var; do
+            DOCKER_CMD="$DOCKER_CMD -e \"$env_var\""
+        done <<< "$ENV_VARS"
+    fi
+
+    # 设备、工作目录、用户、特权
+    DEVICES=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Devices[]?.PathOnHost+":"+.PathInContainer+":"+.CgroupPermissions' 2>/dev/null)
+    if [ -n "$DEVICES" ]; then
+        while IFS= read -r device; do
+            DOCKER_CMD="$DOCKER_CMD --device \"$device\""
+        done <<< "$DEVICES"
+    fi
+
+    PRIVILEGED=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Privileged')
+    [ "$PRIVILEGED" = "true" ] && DOCKER_CMD="$DOCKER_CMD --privileged"
+
+    USER=$(echo "$CONFIG" | jq -r '.[0].Config.User')
     [ -n "$USER" ] && [ "$USER" != "null" ] && DOCKER_CMD="$DOCKER_CMD --user \"$USER\""
+
+    WORKING_DIR=$(echo "$CONFIG" | jq -r '.[0].Config.WorkingDir')
     [ -n "$WORKING_DIR" ] && [ "$WORKING_DIR" != "null" ] && DOCKER_CMD="$DOCKER_CMD -w \"$WORKING_DIR\""
 
+    EXTRA_HOSTS=$(echo "$CONFIG" | jq -r '.[0].HostConfig.ExtraHosts[]?' 2>/dev/null)
+    if [ -n "$EXTRA_HOSTS" ]; then
+        while IFS= read -r extra_host; do
+            DOCKER_CMD="$DOCKER_CMD --add-host \"$extra_host\""
+        done <<< "$EXTRA_HOSTS"
+    fi
+
     DOCKER_CMD="$DOCKER_CMD \"$IMAGE\""
-    [ -n "$ORIGINAL_CMD" ] && [ "$ORIGINAL_CMD" != "null" ] && DOCKER_CMD="$DOCKER_CMD $ORIGINAL_CMD"
 
     echo "执行命令: $DOCKER_CMD"
-    eval "$DOCKER_CMD" && echo "✅ 容器 $CNAME 已成功更新！"
+    eval "$DOCKER_CMD" && echo "✅ 容器 $CNAME 已更新完成！"
 }
 
 
