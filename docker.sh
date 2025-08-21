@@ -209,16 +209,46 @@ uninstall_all() {
 # 更新脚本
 update_script() {
     echo "⬇️ 正在更新 docker-easy 脚本..."
+    
+    # 创建备份
+    BACKUP_PATH="${SCRIPT_PATH}.bak"
+    sudo cp "$SCRIPT_PATH" "$BACKUP_PATH"
+    echo "📦 已创建备份: $BACKUP_PATH"
+    
     SCRIPT_URL="https://raw.githubusercontent.com/Lanlan13-14/Docker-Easy/refs/heads/main/docker.sh"
     tmpfile=$(mktemp)
+    
     if curl -fsSL "$SCRIPT_URL" -o "$tmpfile"; then
-        chmod +x "$tmpfile"
-        sudo mv "$tmpfile" "$SCRIPT_PATH"
-        echo "✅ docker-easy 脚本已更新完成！"
-        echo "下次使用请输入: sudo docker-easy"
+        # 检查下载的脚本是否有效
+        if bash -n "$tmpfile" 2>/dev/null; then
+            chmod +x "$tmpfile"
+            sudo mv "$tmpfile" "$SCRIPT_PATH"
+            echo "✅ docker-easy 脚本已更新完成！"
+            
+            # 询问是否重新加载脚本
+            echo "是否立即重新加载脚本？(y/n)"
+            read -r reload_choice
+            if [[ "$reload_choice" == "y" ]]; then
+                echo "🔄 重新加载脚本..."
+                exec sudo bash "$SCRIPT_PATH"
+            else
+                echo "ℹ️  下次使用请输入: sudo docker-easy"
+            fi
+            
+            # 删除备份
+            sudo rm -f "$BACKUP_PATH"
+        else
+            echo "❌ 下载的脚本语法有误，恢复备份..."
+            sudo mv "$BACKUP_PATH" "$SCRIPT_PATH"
+            rm -f "$tmpfile"
+            echo "✅ 已恢复备份脚本"
+        fi
     else
-        echo "❌ 更新失败，请检查网络或链接是否有效"
+        echo "❌ 更新失败，恢复备份..."
+        sudo mv "$BACKUP_PATH" "$SCRIPT_PATH"
         rm -f "$tmpfile"
+        echo "✅ 已恢复备份脚本"
+        echo "❌ 请检查网络或链接是否有效"
     fi
 }
 
