@@ -41,7 +41,7 @@ install_docker() {
 }
 
 # 更新容器
-update_container_smart() {
+update_container() {
     if ! command -v docker &>/dev/null; then
         echo "❌ 未检测到 docker，请先安装"
         return
