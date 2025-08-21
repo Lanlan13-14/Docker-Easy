@@ -52,93 +52,41 @@ update_container() {
 
     read -p "请输入要更新的容器ID(可输入前几位即可): " CONTAINER_ID
     CID=$(docker ps -q --filter "id=$CONTAINER_ID")
-
     if [ -z "$CID" ]; then
         echo "❌ 未找到容器，请检查输入的ID"
         return
     fi
 
-    CNAME=$(docker inspect --format='{{.Name}}' "$CID" | sed 's/^\/\(.*\)/\1/')
+    CNAME=$(docker inspect --format='{{.Name}}' "$CID" | sed 's#^/##')
     IMAGE=$(docker inspect --format='{{.Config.Image}}' "$CID")
-    CONFIG=$(docker inspect "$CID")
 
     echo "✅ 选中容器: $CNAME (镜像: $IMAGE)"
     echo "⬇️ 拉取最新镜像..."
     docker pull "$IMAGE"
 
+    echo "📥 获取原始启动参数..."
+    ORIG_CMD=$(docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+        assaflavie/runlike "$CID")
+
+    if [ -z "$ORIG_CMD" ]; then
+        echo "❌ runlike 获取启动命令失败"
+        return
+    fi
+
     echo "🛑 停止并删除旧容器..."
-    docker stop "$CID" 2>/dev/null
-    docker rm "$CID" 2>/dev/null
+    docker rm -f "$CID"
 
-    echo "🚀 使用新镜像启动容器..."
-
-    DOCKER_CMD="docker run -d --name \"$CNAME\""
-
-    # 重启策略
-    RESTART_POLICY=$(echo "$CONFIG" | jq -r '.[0].HostConfig.RestartPolicy.Name // empty')
-    [ -n "$RESTART_POLICY" ] && DOCKER_CMD="$DOCKER_CMD --restart \"$RESTART_POLICY\""
-
-    # 网络模式
-    NETWORK=$(echo "$CONFIG" | jq -r '.[0].HostConfig.NetworkMode // empty')
-    [ -n "$NETWORK" ] && [ "$NETWORK" != "default" ] && DOCKER_CMD="$DOCKER_CMD --network \"$NETWORK\""
-
-    # 卷绑定
-    VOLUMES=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Binds[]? // empty')
-    if [ -n "$VOLUMES" ]; then
-        while IFS= read -r volume; do
-            [ -n "$volume" ] && DOCKER_CMD="$DOCKER_CMD -v \"$volume\""
-        done <<< "$VOLUMES"
-    fi
-
-    # 端口映射
-    PORTS=$(echo "$CONFIG" | jq -r '.[0].HostConfig.PortBindings | to_entries[]? | "\(.value[0].HostPort):\(.key | split("/")[0])"' 2>/dev/null)
-    if [ -n "$PORTS" ]; then
-        while IFS= read -r port; do
-            [ -n "$port" ] && DOCKER_CMD="$DOCKER_CMD -p \"$port\""
-        done <<< "$PORTS"
-    fi
-
-    # 环境变量
-    ENV_VARS=$(echo "$CONFIG" | jq -r '.[0].Config.Env[]? // empty')
-    if [ -n "$ENV_VARS" ]; then
-        while IFS= read -r env_var; do
-            [ -n "$env_var" ] && DOCKER_CMD="$DOCKER_CMD -e \"$env_var\""
-        done <<< "$ENV_VARS"
-    fi
-
-    # 工作目录
-    WORKDIR=$(echo "$CONFIG" | jq -r '.[0].Config.WorkingDir // empty')
-    [ -n "$WORKDIR" ] && DOCKER_CMD="$DOCKER_CMD -w \"$WORKDIR\""
-
-    # 用户
-    USER=$(echo "$CONFIG" | jq -r '.[0].Config.User // empty')
-    [ -n "$USER" ] && DOCKER_CMD="$DOCKER_CMD --user \"$USER\""
-
-    # 特权模式
-    PRIVILEGED=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Privileged // empty')
-    [ "$PRIVILEGED" = "true" ] && DOCKER_CMD="$DOCKER_CMD --privileged"
-
-    # 设备挂载
-    DEVICES=$(echo "$CONFIG" | jq -r '.[0].HostConfig.Devices[]? | "\(.PathOnHost):\(.PathInContainer):\(.CgroupPermissions)"' 2>/dev/null)
-    if [ -n "$DEVICES" ]; then
-        while IFS= read -r device; do
-            [ -n "$device" ] && DOCKER_CMD="$DOCKER_CMD --device \"$device\""
-        done <<< "$DEVICES"
-    fi
-
-    # 原始 CMD
-    ORIGINAL_CMD=$(echo "$CONFIG" | jq -r '.[0].Config.Cmd | if . then join(" ") else empty end')
-    DOCKER_CMD="$DOCKER_CMD \"$IMAGE\""
-    [ -n "$ORIGINAL_CMD" ] && DOCKER_CMD="$DOCKER_CMD $ORIGINAL_CMD"
-
-    echo "执行命令: $DOCKER_CMD"
-    eval "$DOCKER_CMD"
+    echo "🚀 启动新容器..."
+    eval "$ORIG_CMD"
 
     if [ $? -eq 0 ]; then
-        echo "✅ 容器 $CNAME 已成功更新！"
+        echo "✅ 容器 $CNAME 已无损更新！"
     else
-        echo "❌ 容器启动失败，请检查配置"
+        echo "❌ 容器启动失败，请检查输出"
     fi
+
+    echo "🧹 清理 runlike 镜像..."
+    docker rmi -f assaflavie/runlike >/dev/null 2>&1
 }
 
 # 停止容器
