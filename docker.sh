@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-docker-easy: Docker 容器管理工具
+# docker-easy: Docker 容器管理工具
 
 SCRIPT_PATH="/usr/local/bin/docker-easy"
 
