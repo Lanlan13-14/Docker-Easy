@@ -59,6 +59,7 @@ update_container() {
 
     CNAME=$(docker inspect --format='{{.Name}}' "$CID" | sed 's#^/##')
     IMAGE=$(docker inspect --format='{{.Config.Image}}' "$CID")
+    OLD_IMAGE_ID=$(docker inspect --format='{{.Image}}' "$CID")  # 获取当前镜像ID
 
     echo "✅ 选中容器: $CNAME (镜像: $IMAGE)"
     echo "⬇️ 拉取最新镜像..."
@@ -81,6 +82,18 @@ update_container() {
 
     if [ $? -eq 0 ]; then
         echo "✅ 容器 $CNAME 已无损更新！"
+        
+        # 删除旧镜像（如果新镜像成功启动）
+        echo "🧹 清理旧镜像..."
+        NEW_IMAGE_ID=$(docker inspect --format='{{.Image}}' $(docker ps -q --filter "name=$CNAME"))
+        if [ "$OLD_IMAGE_ID" != "$NEW_IMAGE_ID" ]; then
+            # 检查是否有其他容器使用旧镜像
+            if [ -z "$(docker ps -a -q --filter ancestor="$OLD_IMAGE_ID" | grep -v "$CID")" ]; then
+                docker rmi "$OLD_IMAGE_ID" 2>/dev/null && echo "✅ 旧镜像已删除" || echo "⚠️ 无法删除旧镜像，可能仍被其他容器使用"
+            else
+                echo "⚠️ 旧镜像仍被其他容器使用，跳过删除"
+            fi
+        fi
     else
         echo "❌ 容器启动失败，请检查输出"
     fi
