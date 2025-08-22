@@ -62,8 +62,28 @@ update_container() {
     OLD_IMAGE_ID=$(docker inspect --format='{{.Image}}' "$CID")  # 获取当前镜像ID
 
     echo "✅ 选中容器: $CNAME (镜像: $IMAGE)"
-    echo "⬇️ 拉取最新镜像..."
-    docker pull "$IMAGE"
+    
+    # 询问是否指定版本
+    echo "是否指定版本？(y/n，默认拉取最新版本)"
+    read -r specify_version
+    if [[ "$specify_version" == "y" ]]; then
+        read -p "请输入版本号 (例如: 1.2.3, alpine, latest): " VERSION
+        # 从原镜像中提取镜像名称（去掉版本部分）
+        BASE_IMAGE=$(echo "$IMAGE" | cut -d: -f1)
+        IMAGE_TO_PULL="${BASE_IMAGE}:${VERSION}"
+        echo "ℹ️ 将拉取指定版本: $IMAGE_TO_PULL"
+    else
+        # 确保镜像名称包含标签
+        if [[ "$IMAGE" != *:* ]]; then
+            IMAGE_TO_PULL="${IMAGE}:latest"
+        else
+            IMAGE_TO_PULL="$IMAGE"
+        fi
+        echo "ℹ️ 将拉取最新版本: $IMAGE_TO_PULL"
+    fi
+    
+    echo "⬇️ 拉取镜像..."
+    docker pull "$IMAGE_TO_PULL"
 
     echo "📥 获取原始启动参数..."
     ORIG_CMD=$(docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
@@ -74,19 +94,22 @@ update_container() {
         return
     fi
 
+    # 替换镜像名称
+    NEW_CMD=$(echo "$ORIG_CMD" | sed "s|$IMAGE|$IMAGE_TO_PULL|")
+
     echo "🛑 停止并删除旧容器..."
     docker rm -f "$CID"
 
     echo "🚀 启动新容器..."
-    eval "$ORIG_CMD"
+    eval "$NEW_CMD"
 
     if [ $? -eq 0 ]; then
-        echo "✅ 容器 $CNAME 已无损更新！"
+        echo "✅ 容器 $CNAME 已更新到版本: $IMAGE_TO_PULL"
         
         # 删除旧镜像（如果新镜像成功启动）
         echo "🧹 清理旧镜像..."
-        NEW_IMAGE_ID=$(docker inspect --format='{{.Image}}' $(docker ps -q --filter "name=$CNAME"))
-        if [ "$OLD_IMAGE_ID" != "$NEW_IMAGE_ID" ]; then
+        NEW_IMAGE_ID=$(docker inspect --format='{{.Image}}' $(docker ps -q --filter "name=$CNAME") 2>/dev/null)
+        if [ -n "$NEW_IMAGE_ID" ] && [ "$OLD_IMAGE_ID" != "$NEW_IMAGE_ID" ]; then
             # 检查是否有其他容器使用旧镜像
             if [ -z "$(docker ps -a -q --filter ancestor="$OLD_IMAGE_ID" | grep -v "$CID")" ]; then
                 docker rmi "$OLD_IMAGE_ID" 2>/dev/null && echo "✅ 旧镜像已删除" || echo "⚠️ 无法删除旧镜像，可能仍被其他容器使用"
