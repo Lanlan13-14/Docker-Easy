@@ -67,11 +67,16 @@ update_container() {
     echo "是否指定版本？(y/n，默认拉取最新版本)"
     read -r specify_version
     if [[ "$specify_version" == "y" ]]; then
-        read -p "请输入版本号 (例如: 1.2.3, alpine, latest): " VERSION
+        read -p "请输入版本号 (例如: 1.2.3, alpine, 直接回车使用latest): " VERSION
+        # 如果用户未输入版本号，则使用latest
+        if [ -z "$VERSION" ]; then
+            VERSION="latest"
+            echo "ℹ️  未输入版本号，使用默认版本: latest"
+        fi
         # 从原镜像中提取镜像名称（去掉版本部分）
         BASE_IMAGE=$(echo "$IMAGE" | cut -d: -f1)
         IMAGE_TO_PULL="${BASE_IMAGE}:${VERSION}"
-        echo "ℹ️ 将拉取指定版本: $IMAGE_TO_PULL"
+        echo "ℹ️  将拉取指定版本: $IMAGE_TO_PULL"
     else
         # 确保镜像名称包含标签
         if [[ "$IMAGE" != *:* ]]; then
@@ -79,7 +84,7 @@ update_container() {
         else
             IMAGE_TO_PULL="$IMAGE"
         fi
-        echo "ℹ️ 将拉取最新版本: $IMAGE_TO_PULL"
+        echo "ℹ️  将拉取最新版本: $IMAGE_TO_PULL"
     fi
     
     echo "⬇️ 拉取镜像..."
