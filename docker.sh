@@ -62,7 +62,7 @@ update_container() {
     OLD_IMAGE_ID=$(docker inspect --format='{{.Image}}' "$CID")  # 获取当前镜像ID
 
     echo "✅ 选中容器: $CNAME (镜像: $IMAGE)"
-    
+
     # 询问是否指定版本
     echo "是否指定版本？(y/n，默认拉取最新版本)"
     read -r specify_version
@@ -86,7 +86,7 @@ update_container() {
         fi
         echo "ℹ️  将拉取最新版本: $IMAGE_TO_PULL"
     fi
-    
+
     echo "⬇️ 拉取镜像..."
     docker pull "$IMAGE_TO_PULL"
 
@@ -110,7 +110,7 @@ update_container() {
 
     if [ $? -eq 0 ]; then
         echo "✅ 容器 $CNAME 已更新到版本: $IMAGE_TO_PULL"
-        
+
         # 删除旧镜像（如果新镜像成功启动）
         echo "🧹 清理旧镜像..."
         NEW_IMAGE_ID=$(docker inspect --format='{{.Image}}' $(docker ps -q --filter "name=$CNAME") 2>/dev/null)
@@ -137,11 +137,25 @@ stop_container() {
     docker stop "$CID" && echo "✅ 容器已停止"
 }
 
+# 强制停止容器
+force_stop_container() {
+    docker ps --format "table {{.ID}}\t{{.Names}}"
+    read -p "请输入要强制停止的容器ID: " CID
+    docker kill "$CID" && echo "✅ 容器已强制停止"
+}
+
 # 启动容器
 start_container() {
     docker ps -a --format "table {{.ID}}\t{{.Names}}\t{{.Status}}"
     read -p "请输入要启动的容器ID: " CID
     docker start "$CID" && echo "✅ 容器已启动"
+}
+
+# 重启容器
+restart_container() {
+    docker ps --format "table {{.ID}}\t{{.Names}}"
+    read -p "请输入要重启的容器ID: " CID
+    docker restart "$CID" && echo "✅ 容器已重启"
 }
 
 # 删除容器
@@ -177,6 +191,30 @@ docker_service() {
     echo "✅ 操作完成"
 }
 
+# 容器操作子菜单
+container_operations() {
+    while true; do
+        echo ""
+        echo "=== 容器操作 ==="
+        echo "1. 启动容器"
+        echo "2. 停止容器"
+        echo "3. 强制停止容器"
+        echo "4. 重启容器"
+        echo "5. 删除容器"
+        echo "0. 返回主菜单"
+        read -p "请选择操作: " choice
+        case $choice in
+            1) start_container ;;
+            2) stop_container ;;
+            3) force_stop_container ;;
+            4) restart_container ;;
+            5) remove_container ;;
+            0) return ;;
+            *) echo "❌ 无效选择" ;;
+        esac
+    done
+}
+
 # 卸载脚本
 uninstall_script() {
     echo "是否卸载 docker-easy 脚本？(y/n)"
@@ -198,32 +236,32 @@ uninstall_all() {
         echo "❌ 已取消卸载"
         return
     fi
-    
+
     # 停止并删除所有容器
     if docker ps -aq 2>/dev/null | grep -q .; then
         echo "🛑 停止并删除所有容器..."
         docker stop $(docker ps -aq) 2>/dev/null
         docker rm -f $(docker ps -aq) 2>/dev/null
     fi
-    
+
     # 删除所有镜像
     if docker images -q 2>/dev/null | grep -q .; then
         echo "🗑️  删除所有镜像..."
         docker rmi -f $(docker images -q) 2>/dev/null
     fi
-    
+
     # 删除所有卷
     if docker volume ls -q 2>/dev/null | grep -q .; then
         echo "🗑️  删除所有卷..."
         docker volume rm -f $(docker volume ls -q) 2>/dev/null
     fi
-    
+
     # 删除所有网络（除了默认网络）
     if docker network ls -q --filter type=custom 2>/dev/null | grep -q .; then
         echo "🗑️  删除所有自定义网络..."
         docker network rm $(docker network ls -q --filter type=custom) 2>/dev/null
     fi
-    
+
     # 卸载Docker
     echo "🗑️  卸载Docker..."
     if command -v apt &>/dev/null; then
@@ -232,17 +270,17 @@ uninstall_all() {
     elif command -v yum &>/dev/null; then
         sudo yum remove -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     fi
-    
+
     # 删除Docker相关文件和目录
     echo "🧹 清理Docker相关文件..."
     sudo rm -rf /var/lib/docker
     sudo rm -rf /var/lib/containerd
     sudo rm -rf /etc/docker
-    
+
     # 删除脚本
     echo "🗑️  删除docker-easy脚本..."
     sudo rm -f "$SCRIPT_PATH"
-    
+
     echo "✅ 所有Docker组件和脚本已完全卸载！"
     exit 0
 }
@@ -250,22 +288,22 @@ uninstall_all() {
 # 更新脚本
 update_script() {
     echo "⬇️ 正在更新 docker-easy 脚本..."
-    
+
     # 创建备份
     BACKUP_PATH="${SCRIPT_PATH}.bak"
     sudo cp "$SCRIPT_PATH" "$BACKUP_PATH"
     echo "📦 已创建备份: $BACKUP_PATH"
-    
+
     SCRIPT_URL="https://raw.githubusercontent.com/Lanlan13-14/Docker-Easy/refs/heads/main/docker.sh"
     tmpfile=$(mktemp)
-    
+
     if curl -fsSL "$SCRIPT_URL" -o "$tmpfile"; then
         # 检查下载的脚本是否有效
         if bash -n "$tmpfile" 2>/dev/null; then
             chmod +x "$tmpfile"
             sudo mv "$tmpfile" "$SCRIPT_PATH"
             echo "✅ docker-easy 脚本已更新完成！"
-            
+
             # 询问是否重新加载脚本
             echo "是否立即重新加载脚本？(y/n)"
             read -r reload_choice
@@ -275,7 +313,7 @@ update_script() {
             else
                 echo "ℹ️  下次使用请输入: sudo docker-easy"
             fi
-            
+
             # 删除备份
             sudo rm -f "$BACKUP_PATH"
         else
@@ -319,26 +357,22 @@ menu() {
         echo "====== Docker Easy 工具 ======"
         echo "1. 更新容器"
         echo "2. 安装/更新 Docker"
-        echo "3. 停止容器"
-        echo "4. 启动容器"
-        echo "5. 删除容器"
-        echo "6. 删除镜像"
-        echo "7. Docker 服务管理"
-        echo "8. 卸载选项"
-        echo "9. 更新 docker-easy 脚本"
+        echo "3. 容器操作"
+        echo "4. 删除镜像"
+        echo "5. Docker 服务管理"
+        echo "6. 卸载选项"
+        echo "7. 更新 docker-easy 脚本"
         echo "0. 退出"
         echo "================================"
         read -p "请选择操作: " choice
         case $choice in
             1) update_container ;;
             2) install_docker ;;
-            3) stop_container ;;
-            4) start_container ;;
-            5) remove_container ;;
-            6) remove_image ;;
-            7) docker_service ;;
-            8) uninstall_menu ;;
-            9) update_script ;;
+            3) container_operations ;;
+            4) remove_image ;;
+            5) docker_service ;;
+            6) uninstall_menu ;;
+            7) update_script ;;
             0) 
                 echo "👋 已退出 docker-easy，下次使用请输入: sudo docker-easy"
                 exit 0 ;;
