@@ -40,6 +40,19 @@ install_docker() {
     fi
 }
 
+# 检查镜像是否已是最新版本
+check_image_up_to_date() {
+    local image="$1"
+    local pull_output="$2"
+    
+    # 检查Docker输出中是否包含"Image is up to date"或"Status: Image is up to date"
+    if echo "$pull_output" | grep -q "Image is up to date\|Status: Image is up to date"; then
+        return 0  # 已是最新
+    else
+        return 1  # 不是最新
+    fi
+}
+
 # 更新容器
 update_container() {
     if ! command -v docker &>/dev/null; then
@@ -77,6 +90,12 @@ update_container() {
         BASE_IMAGE=$(echo "$IMAGE" | cut -d: -f1)
         IMAGE_TO_PULL="${BASE_IMAGE}:${VERSION}"
         echo "ℹ️  将拉取指定版本: $IMAGE_TO_PULL"
+        
+        # 记录是否是指定版本（非latest）
+        IS_SPECIFIC_VERSION=1
+        if [[ "$VERSION" == "latest" ]]; then
+            IS_SPECIFIC_VERSION=0
+        fi
     else
         # 确保镜像名称包含标签
         if [[ "$IMAGE" != *:* ]]; then
@@ -85,10 +104,18 @@ update_container() {
             IMAGE_TO_PULL="$IMAGE"
         fi
         echo "ℹ️  将拉取最新版本: $IMAGE_TO_PULL"
+        IS_SPECIFIC_VERSION=0
     fi
 
     echo "⬇️ 拉取镜像..."
-    docker pull "$IMAGE_TO_PULL"
+    PULL_OUTPUT=$(docker pull "$IMAGE_TO_PULL" 2>&1)
+    echo "$PULL_OUTPUT"
+    
+    # 检查是否已是最新版本
+    if check_image_up_to_date "$IMAGE_TO_PULL" "$PULL_OUTPUT" && [ $IS_SPECIFIC_VERSION -eq 0 ]; then
+        echo "✅ 镜像已是最新版本，无需更新"
+        return
+    fi
 
     echo "📥 获取原始启动参数..."
     ORIG_CMD=$(docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
