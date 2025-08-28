@@ -63,98 +63,92 @@ update_container() {
     echo "📋 当前正在运行的容器："
     docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Names}}"
 
-    read -p "请输入要更新的容器ID(可输入前几位即可): " CONTAINER_ID
-    CID=$(docker ps -q --filter "id=$CONTAINER_ID")
+    read -p "请输入要更新的容器名称(支持模糊匹配): " CONTAINER_NAME
+    if [ -z "$CONTAINER_NAME" ]; then
+        echo "❌ 容器名称不能为空"
+        return
+    fi
+
+    # 清理容器名称输入
+    CONTAINER_NAME=$(echo "$CONTAINER_NAME" | tr -d '\n\r' | sed 's/[^a-zA-Z0-9._-]//g')
+
+    # 使用模糊匹配查找容器
+    MATCHING_CONTAINERS=$(docker ps --filter "name=$CONTAINER_NAME" --format "{{.ID}}\t{{.Names}}")
+    COUNT=$(echo "$MATCHING_CONTAINERS" | wc -l | awk '{print $1}')
+    if [ "$COUNT" -gt 1 ]; then
+        echo "找到多个匹配的容器："
+        echo "$MATCHING_CONTAINERS"
+        read -p "请输入要更新的容器 ID 或名称: " USER_SELECTION
+        CID=$(docker ps --filter "name=$USER_SELECTION" --format "{{.ID}}" | head -n 1)
+    else
+        CID=$(echo "$MATCHING_CONTAINERS" | awk '{print $1}')
+    fi
+
     if [ -z "$CID" ]; then
-        echo "❌ 未找到容器，请检查输入的ID"
+        echo "❌ 未找到名称包含 '$CONTAINER_NAME' 的容器"
         return
     fi
 
-    CNAME=$(docker inspect --format='{{.Name}}' "$CID" | sed 's#^/##')
+    # 获取容器信息
+    if ! CNAME=$(docker inspect --format='{{.Name}}' "$CID" 2>/dev/null | sed 's#^/##'); then
+        echo "❌ 无法获取容器 $CID 的信息"
+        return
+    fi
     IMAGE=$(docker inspect --format='{{.Config.Image}}' "$CID")
-    OLD_IMAGE_ID=$(docker inspect --format='{{.Image}}' "$CID")  # 获取当前镜像ID
 
-    echo "✅ 选中容器: $CNAME (镜像: $IMAGE)"
+    echo "✅ 选中容器: $CNAME (当前镜像: $IMAGE)"
 
-    # 询问是否指定版本
-    echo "是否指定版本？(y/n，默认拉取最新版本)"
-    read -r specify_version
-    if [[ "$specify_version" == "y" ]]; then
-        read -p "请输入版本号 (例如: 1.2.3, alpine, 直接回车使用latest): " VERSION
-        # 如果用户未输入版本号，则使用latest
-        if [ -z "$VERSION" ]; then
-            VERSION="latest"
-            echo "ℹ️  未输入版本号，使用默认版本: latest"
-        fi
-        # 从原镜像中提取镜像名称（去掉版本部分）
-        BASE_IMAGE=$(echo "$IMAGE" | cut -d: -f1)
-        IMAGE_TO_PULL="${BASE_IMAGE}:${VERSION}"
-        echo "ℹ️  将拉取指定版本: $IMAGE_TO_PULL"
-        
-        # 记录是否是指定版本（非latest）
-        IS_SPECIFIC_VERSION=1
-        if [[ "$VERSION" == "latest" ]]; then
-            IS_SPECIFIC_VERSION=0
-        fi
+    # 提示用户输入版本号并验证
+    read -p "请输入目标镜像版本号（直接回车拉取最新版本）: " IMAGE_VERSION
+    if [ -n "$IMAGE_VERSION" ] && ! echo "$IMAGE_VERSION" | grep -qE '^[a-zA-Z0-9._-]+$'; then
+        echo "❌ 无效的版本号格式"
+        return
+    fi
+    if [ -z "$IMAGE_VERSION" ]; then
+        TARGET_IMAGE="${IMAGE%:*}:latest"
     else
-        # 确保镜像名称包含标签
-        if [[ "$IMAGE" != *:* ]]; then
-            IMAGE_TO_PULL="${IMAGE}:latest"
-        else
-            IMAGE_TO_PULL="$IMAGE"
+        TARGET_IMAGE="${IMAGE%:*}:$IMAGE_VERSION"
+    fi
+    echo "🔄 目标镜像: $TARGET_IMAGE"
+
+    # 检查 Watchtower 镜像
+    if ! docker image inspect containrrr/watchtower >/dev/null 2>&1; then
+        echo "🔄 拉取 Watchtower 镜像..."
+        if ! docker pull containrrr/watchtower; then
+            echo "❌ 无法拉取 Watchtower 镜像"
+            return
         fi
-        echo "ℹ️  将拉取最新版本: $IMAGE_TO_PULL"
-        IS_SPECIFIC_VERSION=0
     fi
 
-    echo "⬇️ 拉取镜像..."
-    PULL_OUTPUT=$(docker pull "$IMAGE_TO_PULL" 2>&1)
-    echo "$PULL_OUTPUT"
-    
-    # 检查是否已是最新版本
-    if check_image_up_to_date "$IMAGE_TO_PULL" "$PULL_OUTPUT" && [ $IS_SPECIFIC_VERSION -eq 0 ]; then
-        echo "✅ 镜像已是最新版本，无需更新"
+    # 检查当前镜像是否已是目标版本
+    CURRENT_IMAGE=$(docker inspect --format='{{.Config.Image}}' "$CID")
+    if [ "$CURRENT_IMAGE" = "$TARGET_IMAGE" ]; then
+        echo "✅ 容器 $CNAME 已是目标版本 ($TARGET_IMAGE)，无需更新"
         return
     fi
 
-    echo "📥 获取原始启动参数..."
-    ORIG_CMD=$(docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-        assaflavie/runlike "$CID")
+    # 使用 Watchtower 更新指定容器并清理旧镜像
+    echo "⚡ 使用 Watchtower 进行零停机更新..."
+    WATCHTOWER_OUTPUT=$(docker run --rm \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        containrrr/watchtower \
+        --cleanup \
+        --run-once \
+        --image "$TARGET_IMAGE" \
+        "$CNAME" 2>&1)
 
-    if [ -z "$ORIG_CMD" ]; then
-        echo "❌ runlike 获取启动命令失败"
-        return
-    fi
+    echo "$WATCHTOWER_OUTPUT"
 
-    # 替换镜像名称
-    NEW_CMD=$(echo "$ORIG_CMD" | sed "s|$IMAGE|$IMAGE_TO_PULL|")
-
-    echo "🛑 停止并删除旧容器..."
-    docker rm -f "$CID"
-
-    echo "🚀 启动新容器..."
-    eval "$NEW_CMD"
-
-    if [ $? -eq 0 ]; then
-        echo "✅ 容器 $CNAME 已更新到版本: $IMAGE_TO_PULL"
-
-        # 删除旧镜像（如果新镜像成功启动）
-        echo "🧹 清理旧镜像..."
-        NEW_IMAGE_ID=$(docker inspect --format='{{.Image}}' $(docker ps -q --filter "name=$CNAME") 2>/dev/null)
-        if [ -n "$NEW_IMAGE_ID" ] && [ "$OLD_IMAGE_ID" != "$NEW_IMAGE_ID" ]; then
-            # 检查是否有其他容器使用旧镜像
-            if [ -z "$(docker ps -a -q --filter ancestor="$OLD_IMAGE_ID" | grep -v "$CID")" ]; then
-                docker rmi "$OLD_IMAGE_ID" 2>/dev/null && echo "✅ 旧镜像已删除" || echo "⚠️ 无法删除旧镜像，可能仍被其他容器使用"
-            else
-                echo "⚠️ 旧镜像仍被其他容器使用，跳过删除"
-            fi
-        fi
+    # 检查更新结果
+    if echo "$WATCHTOWER_OUTPUT" | grep -q "Found new.*image for"; then
+        echo "✅ 容器 $CNAME 更新成功到 $TARGET_IMAGE"
+    elif echo "$WATCHTOWER_OUTPUT" | grep -q "No updates found"; then
+        echo "✅ 容器 $CNAME 已是最新版本 ($TARGET_IMAGE)"
     else
-        echo "❌ 容器启动失败，请检查输出"
+        echo "⚠️ 更新状态不明，已记录到日志 /var/log/container_update.log"
+        echo "[$(date)] 更新容器 $CNAME 到 $TARGET_IMAGE" >> /var/log/container_update.log
+        echo "$WATCHTOWER_OUTPUT" >> /var/log/container_update.log
     fi
-
-    echo "🧹 清理 runlike 镜像..."
-    docker rmi -f assaflavie/runlike >/dev/null 2>&1
 }
 
 # 停止容器
