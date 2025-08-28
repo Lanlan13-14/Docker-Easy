@@ -72,7 +72,7 @@ update_container() {
     # 清理输入
     CONTAINER_NAME=$(echo "$CONTAINER_NAME" | tr -d '\n\r' | xargs)
 
-    # 改进的匹配逻辑：先尝试ID前缀匹配，再尝试名称匹配
+    # 改进的匹配逻辑
     MATCHING_CONTAINERS=$(docker ps --format "{{.ID}}\t{{.Names}}" | grep -E "(^$CONTAINER_NAME|$CONTAINER_NAME)")
 
     if [ -z "$MATCHING_CONTAINERS" ]; then
@@ -104,32 +104,26 @@ update_container() {
         return 1
     fi
     
-    IMAGE=$(docker inspect --format='{{.Config.Image}}' "$CID")
-    echo "✅ 选中容器: $CNAME (当前镜像: $IMAGE)"
+    CURRENT_IMAGE=$(docker inspect --format='{{.Config.Image}}' "$CID")
+    echo "✅ 选中容器: $CNAME (当前镜像: $CURRENT_IMAGE)"
 
     # 提示用户输入版本号
-    read -p "请输入目标镜像版本号（直接回车拉取最新版本）: " IMAGE_VERSION
-    if [ -n "$IMAGE_VERSION" ] && ! echo "$IMAGE_VERSION" | grep -qE '^[a-zA-Z0-9._:-]+$'; then
-        echo "❌ 无效的版本号格式"
-        return 1
-    fi
+    read -p "请输入目标镜像版本号（直接回车使用最新版本）: " IMAGE_VERSION
     
     # 构建目标镜像名称
-    BASE_IMAGE=$(echo "$IMAGE" | cut -d: -f1)
+    BASE_IMAGE=$(echo "$CURRENT_IMAGE" | cut -d: -f1)
     if [ -z "$IMAGE_VERSION" ]; then
         TARGET_IMAGE="$BASE_IMAGE:latest"
     else
+        # 验证版本号格式
+        if ! echo "$IMAGE_VERSION" | grep -qE '^[a-zA-Z0-9._:-]+$'; then
+            echo "❌ 无效的版本号格式"
+            return 1
+        fi
         TARGET_IMAGE="$BASE_IMAGE:$IMAGE_VERSION"
     fi
     
     echo "🔄 目标镜像: $TARGET_IMAGE"
-
-    # 检查当前镜像是否已是目标版本
-    CURRENT_IMAGE=$(docker inspect --format='{{.Config.Image}}' "$CID")
-    if [ "$CURRENT_IMAGE" = "$TARGET_IMAGE" ]; then
-        echo "✅ 容器 $CNAME 已是目标版本 ($TARGET_IMAGE)，无需更新"
-        return 0
-    fi
 
     # 拉取 Watchtower 镜像（如果不存在）
     if ! docker image inspect containrrr/watchtower >/dev/null 2>&1; then
@@ -140,7 +134,37 @@ update_container() {
         fi
     fi
 
-    # 使用 Watchtower 更新
+    # 使用 Watchtower 检查是否有更新（更准确的判断）
+    echo "🔍 检查镜像更新状态..."
+    CHECK_OUTPUT=$(docker run --rm \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        containrrr/watchtower \
+        --run-once \
+        --monitor-only \
+        "$CNAME" 2>&1)
+
+    # 分析检查结果
+    if echo "$CHECK_OUTPUT" | grep -q "No updates found"; then
+        echo "✅ 容器 $CNAME 已是最新版本，无需更新"
+        
+        # 额外检查用户指定的版本是否与当前版本不同
+        if [ "$CURRENT_IMAGE" != "$TARGET_IMAGE" ]; then
+            echo "ℹ️  注意：当前运行版本 ($CURRENT_IMAGE) 与指定版本 ($TARGET_IMAGE) 不同"
+            read -p "是否仍然强制更新？(y/N): " FORCE_UPDATE
+            if [ "$FORCE_UPDATE" != "y" ] && [ "$FORCE_UPDATE" != "Y" ]; then
+                echo "操作已取消"
+                return 0
+            fi
+        else
+            return 0
+        fi
+    elif echo "$CHECK_OUTPUT" | grep -q "Found new.*image for"; then
+        echo "🔄 发现新版本镜像，开始更新..."
+    else
+        echo "⚠️ 无法确定更新状态，继续执行更新操作..."
+    fi
+
+    # 使用 Watchtower 进行更新
     echo "⚡ 使用 Watchtower 进行零停机更新..."
     WATCHTOWER_OUTPUT=$(docker run --rm \
         -v /var/run/docker.sock:/var/run/docker.sock \
@@ -155,6 +179,12 @@ update_container() {
     # 检查更新结果
     if echo "$WATCHTOWER_OUTPUT" | grep -q "Found new.*image for"; then
         echo "✅ 容器 $CNAME 更新成功到 $TARGET_IMAGE"
+        
+        # 验证更新结果
+        UPDATED_IMAGE=$(docker inspect --format='{{.Config.Image}}' "$CID" 2>/dev/null || echo "")
+        if [ "$UPDATED_IMAGE" = "$TARGET_IMAGE" ]; then
+            echo "✅ 验证成功：容器现在运行指定版本"
+        fi
         return 0
     elif echo "$WATCHTOWER_OUTPUT" | grep -q "No updates found"; then
         echo "✅ 容器 $CNAME 已是最新版本 ($TARGET_IMAGE)"
@@ -163,7 +193,8 @@ update_container() {
         echo "⚠️ 更新状态不明，已记录到日志 /var/log/container_update.log"
         mkdir -p /var/log
         echo "[$(date)] 更新容器 $CNAME 到 $TARGET_IMAGE" >> /var/log/container_update.log
-        echo "$WATCHTOWER_OUTPUT" >> /var/log/container_update.log
+        echo "检查输出: $CHECK_OUTPUT" >> /var/log/container_update.log
+        echo "更新输出: $WATCHTOWER_OUTPUT" >> /var/log/container_update.log
         return 1
     fi
 }
