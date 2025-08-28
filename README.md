@@ -1,6 +1,7 @@
 ## Docker-Easy
 ### 快速docker管理工具
 ##### 仅支持Debian/Ubuntu
+### Watchtower自动更新问题修复中请勿使用
 ### 1. 安装
 ```
 curl -L https://raw.githubusercontent.com/Lanlan13-14/Docker-Easy/refs/heads/main/docker.sh -o /tmp/docker-easy && chmod +x /tmp/docker-easy && sudo mv /tmp/docker-easy /usr/local/bin/docker-easy && sudo docker-easy
