@@ -277,8 +277,8 @@ setup_watchtower() {
 
     case $FREQ_CHOICE in
         1) INTERVAL=3600 ;;  # 每小时
-        2) SCHEDULE="0 2 * * *" ;;
-        3) SCHEDULE="0 2 * * 0" ;;
+        2) SCHEDULE="0 2 * * *" ;;  # 每天凌晨2点
+        3) SCHEDULE="0 2 * * 0" ;;  # 每周日凌晨2点
         4)
             echo "📝 请输入自定义 cron 表达式（格式: '分 时 日 月 周'）"
             read -p "cron 表达式: " SCHEDULE
@@ -356,6 +356,34 @@ setup_watchtower() {
     else
         echo "❌ Watchtower 启动失败"
     fi
+}
+
+# Watchtower 管理子菜单
+watchtower_menu() {
+    while true; do
+        echo ""
+        echo "=== Watchtower 自动更新 ==="
+        echo "1. 设置自动更新"
+        echo "2. 删除自动更新"
+        echo "3. 查看当前状态"
+        echo "0. 返回主菜单"
+        read -p "请选择操作: " choice
+        case $choice in
+            1) setup_watchtower ;;
+            2) remove_watchtower ;;
+            3)
+                echo "🔍 Watchtower 状态："
+                docker ps -a --filter "name=watchtower" --format "table {{.ID}}\t{{.Names}}\t{{.Status}}"
+                if docker ps -a --filter "name=watchtower" | grep -q "watchtower"; then
+                    echo "📊 使用 'docker logs watchtower' 查看详细日志"
+                else
+                    echo "ℹ️ Watchtower 容器未运行"
+                fi
+                ;;
+            0) return ;;
+            *) echo "❌ 无效选择" ;;
+        esac
+    done
 }
 
 # 卸载脚本
