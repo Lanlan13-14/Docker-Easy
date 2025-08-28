@@ -244,7 +244,7 @@ setup_watchtower() {
 
     echo "🔍 检查现有 Watchtower 容器..."
     WATCHTOWER_CONTAINER=$(docker ps -a --filter "name=watchtower" --format "{{.ID}}")
-    
+
     if [ -n "$WATCHTOWER_CONTAINER" ]; then
         echo "⚠️ 发现已存在的 Watchtower 容器"
         echo "是否删除现有 Watchtower 容器并重新设置？(y/n)"
@@ -272,13 +272,15 @@ setup_watchtower() {
     echo "4. 自定义 cron 表达式"
     read -p "请选择 (1-4): " FREQ_CHOICE
 
+    SCHEDULE=""
+    INTERVAL=""
+
     case $FREQ_CHOICE in
-        1) SCHEDULE="0 * * * *" ;;
+        1) INTERVAL=3600 ;;  # 每小时
         2) SCHEDULE="0 2 * * *" ;;
         3) SCHEDULE="0 2 * * 0" ;;
         4)
             echo "📝 请输入自定义 cron 表达式（格式: '分 时 日 月 周'）"
-            echo "💡 例如: '0 2 * * *' 表示每天凌晨2点"
             read -p "cron 表达式: " SCHEDULE
             ;;
         *)
@@ -295,9 +297,7 @@ setup_watchtower() {
         echo "📧 请输入通知方式（可选: email, slack, gotify, teams等）"
         read -p "通知方式: " NOTIFY_TYPE
         echo "🔑 请输入通知所需的配置参数（格式: key1=value1,key2=value2）"
-        echo "💡 例如 email: url=smtp://user:pass@smtp.example.com:587,from=from@example.com,to=to@example.com"
         read -p "通知配置: " NOTIFY_OPTS
-        
         NOTIFY_FLAGS="--notification-$NOTIFY_TYPE --$NOTIFY_TYPE-$NOTIFY_OPTS"
     fi
 
@@ -312,13 +312,16 @@ setup_watchtower() {
     echo ""
     echo "📋 即将创建的 Watchtower 配置："
     echo "📦 监控容器: $CONTAINERS"
-    echo "⏰ 检查频率: $SCHEDULE"
+    if [[ -n "$INTERVAL" ]]; then
+        echo "⏰ 检查频率: 每 $((INTERVAL / 60)) 分钟"
+    else
+        echo "⏰ 检查频率: $SCHEDULE"
+    fi
     echo "🔔 通知: $( [ -n "$NOTIFY_FLAGS" ] && echo "是" || echo "否" )"
     echo "🧹 清理旧镜像: $( [ -n "$CLEANUP_FLAG" ] && echo "是" || echo "否" )"
     echo ""
     echo "是否确认创建？(y/n)"
     read -r CONFIRM
-
     if [[ "$CONFIRM" != "y" ]]; then
         echo "❌ 已取消操作"
         return
@@ -329,11 +332,15 @@ setup_watchtower() {
         --name watchtower \
         --restart unless-stopped \
         -v /var/run/docker.sock:/var/run/docker.sock \
-        containrrr/watchtower \
-        --interval 0 \
-        --schedule \"$SCHEDULE\" \
-        $CLEANUP_FLAG \
-        $NOTIFY_FLAGS"
+        containrrr/watchtower"
+
+    if [[ -n "$INTERVAL" ]]; then
+        WATCHTOWER_CMD="$WATCHTOWER_CMD --interval $INTERVAL"
+    else
+        WATCHTOWER_CMD="$WATCHTOWER_CMD --schedule \"$SCHEDULE\""
+    fi
+
+    WATCHTOWER_CMD="$WATCHTOWER_CMD $CLEANUP_FLAG $NOTIFY_FLAGS"
 
     # 添加要监控的容器
     if [[ "$CONTAINERS" != "all" ]]; then
@@ -349,57 +356,6 @@ setup_watchtower() {
     else
         echo "❌ Watchtower 启动失败"
     fi
-}
-
-# 删除 Watchtower 自动更新
-remove_watchtower() {
-    if ! command -v docker &>/dev/null; then
-        echo "❌ 未检测到 docker，请先安装"
-        return
-    fi
-
-    echo "🔍 查找 Watchtower 容器..."
-    WATCHTOWER_CONTAINER=$(docker ps -a --filter "name=watchtower" --format "{{.ID}}")
-    
-    if [ -z "$WATCHTOWER_CONTAINER" ]; then
-        echo "ℹ️ 未找到 Watchtower 容器"
-        return
-    fi
-
-    echo "🛑 停止并删除 Watchtower 容器..."
-    docker rm -f $WATCHTOWER_CONTAINER
-    
-    if [ $? -eq 0 ]; then
-        echo "✅ Watchtower 自动更新服务已删除"
-    else
-        echo "❌ 删除 Watchtower 失败"
-    fi
-}
-
-# Watchtower 管理子菜单
-watchtower_menu() {
-    while true; do
-        echo ""
-        echo "=== Watchtower 自动更新 ==="
-        echo "1. 设置自动更新"
-        echo "2. 删除自动更新"
-        echo "3. 查看当前状态"
-        echo "0. 返回主菜单"
-        read -p "请选择操作: " choice
-        case $choice in
-            1) setup_watchtower ;;
-            2) remove_watchtower ;;
-            3)
-                echo "🔍 Watchtower 状态："
-                docker ps -a --filter "name=watchtower" --format "table {{.ID}}\t{{.Names}}\t{{.Status}}"
-                if docker ps -a --filter "name=watchtower" | grep -q "watchtower"; then
-                    echo "📊 使用 'docker logs watchtower' 查看详细日志"
-                fi
-                ;;
-            0) return ;;
-            *) echo "❌ 无效选择" ;;
-        esac
-    done
 }
 
 # 卸载脚本
