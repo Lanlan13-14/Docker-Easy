@@ -352,6 +352,7 @@ setup_watchtower() {
                 echo "⚠️ 跳过非容器名: $c"
             fi
         done
+        # 将容器名称添加到命令末尾（不是作为schedule参数）
         WATCHTOWER_CMD="$WATCHTOWER_CMD $VALID_CONTAINERS"
     fi
 
