@@ -130,10 +130,13 @@ update_container() {
         echo "❌ 无效的版本号格式"
         return
     fi
+
+    # 提取基础镜像名称（去掉标签部分）
+    BASE_IMAGE="${IMAGE%:*}"
     if [ -z "$IMAGE_VERSION" ]; then
-        TARGET_IMAGE="${IMAGE%:*}:latest"
+        TARGET_IMAGE="$BASE_IMAGE:latest"
     else
-        TARGET_IMAGE="${IMAGE%:*}:$IMAGE_VERSION"
+        TARGET_IMAGE="$BASE_IMAGE:$IMAGE_VERSION"
     fi
     echo "🔄 目标镜像: $TARGET_IMAGE"
 
@@ -146,47 +149,65 @@ update_container() {
         fi
     fi
 
-    # 使用 Watchtower --monitor-only 检查镜像是否需要更新
-    echo "🔍 使用 Watchtower 检查镜像更新..."
+    # 首先检查目标镜像是否存在本地，如果不存在则拉取
+    if ! docker image inspect "$TARGET_IMAGE" >/dev/null 2>&1; then
+        echo "🔄 拉取目标镜像: $TARGET_IMAGE"
+        if ! docker pull "$TARGET_IMAGE"; then
+            echo "❌ 无法拉取镜像 $TARGET_IMAGE"
+            return
+        fi
+    fi
+
+    # 使用 Watchtower 检查更新（不使用 --image 参数，让 Watchtower 处理容器本身的镜像）
+    echo "🔍 检查镜像更新..."
     MONITOR_OUTPUT=$(docker run --rm \
         -v /var/run/docker.sock:/var/run/docker.sock \
         containrrr/watchtower \
         --monitor-only \
         --run-once \
-        $( [ -n "$IMAGE_VERSION" ] && echo "--image $TARGET_IMAGE" ) \
         "$CNAME" 2>&1)
 
+    echo "$MONITOR_OUTPUT"
+
+    # 检查是否需要更新
     if echo "$MONITOR_OUTPUT" | grep -q "No updates found"; then
-        echo "✅ 容器 $CNAME 已是最新版本 ($TARGET_IMAGE)，无需更新"
+        echo "✅ 容器 $CNAME 已是最新版本，无需更新"
+        # 但用户可能指定了特定版本，需要检查是否需要强制更新
+        CURRENT_TAG="${IMAGE##*:}"
+        if [ -n "$IMAGE_VERSION" ] && [ "$CURRENT_TAG" != "$IMAGE_VERSION" ]; then
+            echo "⚠️  当前使用标签: $CURRENT_TAG, 目标标签: $IMAGE_VERSION"
+            read -p "是否强制更新到指定版本? (y/N): " FORCE_UPDATE
+            if [ "$FORCE_UPDATE" = "y" ] || [ "$FORCE_UPDATE" = "Y" ]; then
+                # 执行强制更新
+                echo "⚡ 强制更新到指定版本..."
+                WATCHTOWER_OUTPUT=$(docker run --rm \
+                    -v /var/run/docker.sock:/var/run/docker.sock \
+                    containrrr/watchtower \
+                    --cleanup \
+                    --run-once \
+                    "$CNAME" 2>&1)
+                echo "$WATCHTOWER_OUTPUT"
+                echo "✅ 容器 $CNAME 已更新到指定版本"
+            else
+                echo "❌ 取消更新"
+            fi
+        fi
         return
-    elif ! echo "$MONITOR_OUTPUT" | grep -q "Found new.*image for"; then
-        echo "⚠️ 检查更新状态不明，已记录到日志 /var/log/container_update.log"
-        echo "[$(date)] 检查容器 $CNAME 更新到 $TARGET_IMAGE" >> /var/log/container_update.log
-        echo "$MONITOR_OUTPUT" >> /var/log/container_update.log
-        return
-    fi
-
-    # 如果需要更新，执行 Watchtower 更新
-    echo "⚡ 使用 Watchtower 进行零停机更新..."
-    WATCHTOWER_OUTPUT=$(docker run --rm \
-        -v /var/run/docker.sock:/var/run/docker.sock \
-        containrrr/watchtower \
-        --cleanup \
-        --run-once \
-        --image "$TARGET_IMAGE" \
-        "$CNAME" 2>&1)
-
-    echo "$WATCHTOWER_OUTPUT"
-
-    # 检查更新结果
-    if echo "$WATCHTOWER_OUTPUT" | grep -q "Found new.*image for"; then
-        echo "✅ 容器 $CNAME 更新成功到 $TARGET_IMAGE"
-    elif echo "$WATCHTOWER_OUTPUT" | grep -q "No updates found"; then
-        echo "✅ 容器 $CNAME 已是最新版本 ($TARGET_IMAGE)"
+    elif echo "$MONITOR_OUTPUT" | grep -q "Found new.*image for"; then
+        echo "⚡ 发现新版本，开始更新..."
+        # 执行更新
+        WATCHTOWER_OUTPUT=$(docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            containrrr/watchtower \
+            --cleanup \
+            --run-once \
+            "$CNAME" 2>&1)
+        echo "$WATCHTOWER_OUTPUT"
+        echo "✅ 容器 $CNAME 更新成功"
     else
-        echo "⚠️ 更新状态不明，已记录到日志 /var/log/container_update.log"
-        echo "[$(date)] 更新容器 $CNAME 到 $TARGET_IMAGE" >> /var/log/container_update.log
-        echo "$WATCHTOWER_OUTPUT" >> /var/log/container_update.log
+        echo "⚠️ 检查更新状态不明"
+        echo "[$(date)] 检查容器 $CNAME 更新" >> /var/log/container_update.log
+        echo "$MONITOR_OUTPUT" >> /var/log/container_update.log
     fi
 }
 
