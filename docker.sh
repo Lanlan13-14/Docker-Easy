@@ -57,7 +57,7 @@ check_image_up_to_date() {
 update_container() {
     if ! command -v docker &>/dev/null; then
         echo "❌ 未检测到 docker，请先安装"
-        return
+        return 1
     fi
 
     echo "📋 当前正在运行的容器："
@@ -66,102 +66,105 @@ update_container() {
     read -p "请输入要更新的容器名称或 ID (支持模糊匹配): " CONTAINER_NAME
     if [ -z "$CONTAINER_NAME" ]; then
         echo "❌ 容器名称或 ID 不能为空"
-        return
+        return 1
     fi
 
-    # 清理容器名称或 ID 输入（仅移除换行符）
-    CONTAINER_NAME=$(echo "$CONTAINER_NAME" | tr -d '\n\r')
+    # 清理输入
+    CONTAINER_NAME=$(echo "$CONTAINER_NAME" | tr -d '\n\r' | xargs)
 
-    # 尝试精确匹配容器 ID
-    CID=$(docker ps --filter "id=$CONTAINER_NAME" --format "{{.ID}}" | head -n 1)
-    if [ -n "$CID" ]; then
-        # ID 匹配成功，直接使用
-        MATCHING_CONTAINERS=$(docker ps --filter "id=$CID" --format "{{.ID}}\t{{.Names}}")
-    else
-        # ID 匹配失败，尝试名称模糊匹配
-        MATCHING_CONTAINERS=$(docker ps --filter "name=$CONTAINER_NAME" --format "{{.ID}}\t{{.Names}}")
+    # 改进的匹配逻辑：先尝试ID前缀匹配，再尝试名称匹配
+    MATCHING_CONTAINERS=$(docker ps --format "{{.ID}}\t{{.Names}}" | grep -E "(^$CONTAINER_NAME|$CONTAINER_NAME)")
+
+    if [ -z "$MATCHING_CONTAINERS" ]; then
+        echo "❌ 未找到名称或 ID 包含 '$CONTAINER_NAME' 的容器"
+        return 1
     fi
 
     COUNT=$(echo "$MATCHING_CONTAINERS" | wc -l | awk '{print $1}')
     if [ "$COUNT" -gt 1 ]; then
         echo "找到多个匹配的容器："
+        echo "ID\t名称"
         echo "$MATCHING_CONTAINERS"
-        read -p "请输入要更新的容器 ID 或名称 (支持模糊匹配): " USER_SELECTION
-        USER_SELECTION=$(echo "$USER_SELECTION" | tr -d '\n\r')
-        # 尝试精确匹配二次输入的 ID
-        CID=$(docker ps --filter "id=$USER_SELECTION" --format "{{.ID}}" | head -n 1)
+        read -p "请输入要更新的容器完整 ID: " USER_SELECTION
+        USER_SELECTION=$(echo "$USER_SELECTION" | tr -d '\n\r' | xargs)
+        
+        # 验证用户选择的ID是否存在
+        CID=$(echo "$MATCHING_CONTAINERS" | awk -v sel="$USER_SELECTION" '$1 == sel {print $1}')
         if [ -z "$CID" ]; then
-            # ID 匹配失败，尝试名称模糊匹配
-            CID=$(docker ps --filter "name=$USER_SELECTION" --format "{{.ID}}" | head -n 1)
+            echo "❌ 无效的选择"
+            return 1
         fi
     else
         CID=$(echo "$MATCHING_CONTAINERS" | awk '{print $1}')
     fi
 
-    if [ -z "$CID" ]; then
-        echo "❌ 未找到名称或 ID 包含 '$CONTAINER_NAME' 的容器"
-        return
-    fi
-
     # 获取容器信息
     if ! CNAME=$(docker inspect --format='{{.Name}}' "$CID" 2>/dev/null | sed 's#^/##'); then
         echo "❌ 无法获取容器 $CID 的信息"
-        return
+        return 1
     fi
+    
     IMAGE=$(docker inspect --format='{{.Config.Image}}' "$CID")
-
     echo "✅ 选中容器: $CNAME (当前镜像: $IMAGE)"
 
-    # 提示用户输入版本号并验证
+    # 提示用户输入版本号
     read -p "请输入目标镜像版本号（直接回车拉取最新版本）: " IMAGE_VERSION
-    if [ -n "$IMAGE_VERSION" ] && ! echo "$IMAGE_VERSION" | grep -qE '^[a-zA-Z0-9._-]+$'; then
+    if [ -n "$IMAGE_VERSION" ] && ! echo "$IMAGE_VERSION" | grep -qE '^[a-zA-Z0-9._:-]+$'; then
         echo "❌ 无效的版本号格式"
-        return
+        return 1
     fi
+    
+    # 构建目标镜像名称
+    BASE_IMAGE=$(echo "$IMAGE" | cut -d: -f1)
     if [ -z "$IMAGE_VERSION" ]; then
-        TARGET_IMAGE="${IMAGE%:*}:latest"
+        TARGET_IMAGE="$BASE_IMAGE:latest"
     else
-        TARGET_IMAGE="${IMAGE%:*}:$IMAGE_VERSION"
+        TARGET_IMAGE="$BASE_IMAGE:$IMAGE_VERSION"
     fi
+    
     echo "🔄 目标镜像: $TARGET_IMAGE"
-
-    # 检查 Watchtower 镜像
-    if ! docker image inspect containrrr/watchtower >/dev/null 2>&1; then
-        echo "🔄 拉取 Watchtower 镜像..."
-        if ! docker pull containrrr/watchtower; then
-            echo "❌ 无法拉取 Watchtower 镜像"
-            return
-        fi
-    fi
 
     # 检查当前镜像是否已是目标版本
     CURRENT_IMAGE=$(docker inspect --format='{{.Config.Image}}' "$CID")
     if [ "$CURRENT_IMAGE" = "$TARGET_IMAGE" ]; then
         echo "✅ 容器 $CNAME 已是目标版本 ($TARGET_IMAGE)，无需更新"
-        return
+        return 0
     fi
 
-    # 使用 Watchtower 更新指定容器并清理旧镜像
+    # 拉取 Watchtower 镜像（如果不存在）
+    if ! docker image inspect containrrr/watchtower >/dev/null 2>&1; then
+        echo "🔄 拉取 Watchtower 镜像..."
+        if ! docker pull containrrr/watchtower; then
+            echo "❌ 无法拉取 Watchtower 镜像"
+            return 1
+        fi
+    fi
+
+    # 使用 Watchtower 更新
     echo "⚡ 使用 Watchtower 进行零停机更新..."
     WATCHTOWER_OUTPUT=$(docker run --rm \
         -v /var/run/docker.sock:/var/run/docker.sock \
         containrrr/watchtower \
         --cleanup \
         --run-once \
-        --image "$TARGET_IMAGE" \
-        "$CNAME" 2>&1)
+        "$CNAME" \
+        --image "$TARGET_IMAGE" 2>&1)
 
     echo "$WATCHTOWER_OUTPUT"
 
     # 检查更新结果
     if echo "$WATCHTOWER_OUTPUT" | grep -q "Found new.*image for"; then
         echo "✅ 容器 $CNAME 更新成功到 $TARGET_IMAGE"
+        return 0
     elif echo "$WATCHTOWER_OUTPUT" | grep -q "No updates found"; then
         echo "✅ 容器 $CNAME 已是最新版本 ($TARGET_IMAGE)"
+        return 0
     else
         echo "⚠️ 更新状态不明，已记录到日志 /var/log/container_update.log"
+        mkdir -p /var/log
         echo "[$(date)] 更新容器 $CNAME 到 $TARGET_IMAGE" >> /var/log/container_update.log
         echo "$WATCHTOWER_OUTPUT" >> /var/log/container_update.log
+        return 1
     fi
 }
 
