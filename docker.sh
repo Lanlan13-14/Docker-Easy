@@ -44,7 +44,7 @@ install_docker() {
 check_image_up_to_date() {
     local image="$1"
     local pull_output="$2"
-    
+
     # 检查Docker输出中是否包含"Image is up to date"或"Status: Image is up to date"
     if echo "$pull_output" | grep -q "Image is up to date\|Status: Image is up to date"; then
         return 0  # 已是最新
@@ -63,152 +63,98 @@ update_container() {
     echo "📋 当前正在运行的容器："
     docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Names}}"
 
-    read -p "请输入要更新的容器名称或 ID (支持模糊匹配): " CONTAINER_NAME
-    if [ -z "$CONTAINER_NAME" ]; then
-        echo "❌ 容器名称或 ID 不能为空"
-        return
-    fi
-
-    # 清理容器名称或 ID 输入（仅移除换行符）
-    CONTAINER_NAME=$(echo "$CONTAINER_NAME" | tr -d '\n\r')
-
-    # 首先尝试精确匹配容器ID（完整ID）
-    CID=$(docker ps --filter "id=$CONTAINER_NAME" --format "{{.ID}}" | head -n 1)
-    
-    # 如果完整ID没匹配到，尝试匹配ID前缀（Docker支持使用ID前缀）
+    read -p "请输入要更新的容器ID(可输入前几位即可): " CONTAINER_ID
+    CID=$(docker ps -q --filter "id=$CONTAINER_ID")
     if [ -z "$CID" ]; then
-        CID=$(docker ps --format "table {{.ID}}\t{{.Names}}" | awk -v pattern="^$CONTAINER_NAME" '$1 ~ pattern {print $1; exit}')
-    fi
-    
-    # 如果ID匹配成功
-    if [ -n "$CID" ]; then
-        MATCHING_CONTAINERS=$(docker ps --filter "id=$CID" --format "{{.ID}}\t{{.Names}}")
-    else
-        # ID 匹配失败，尝试名称模糊匹配
-        MATCHING_CONTAINERS=$(docker ps --filter "name=$CONTAINER_NAME" --format "{{.ID}}\t{{.Names}}")
-    fi
-
-    COUNT=$(echo "$MATCHING_CONTAINERS" | grep -v "^$" | wc -l | awk '{print $1}')
-    if [ "$COUNT" -eq 0 ]; then
-        echo "❌ 未找到名称或 ID 包含 '$CONTAINER_NAME' 的容器"
-        return
-    elif [ "$COUNT" -gt 1 ]; then
-        echo "找到多个匹配的容器："
-        echo "$MATCHING_CONTAINERS"
-        read -p "请输入要更新的容器 ID 或名称 (支持模糊匹配): " USER_SELECTION
-        USER_SELECTION=$(echo "$USER_SELECTION" | tr -d '\n\r')
-        
-        # 重新尝试匹配用户选择的容器
-        CID=$(docker ps --filter "id=$USER_SELECTION" --format "{{.ID}}" | head -n 1)
-        if [ -z "$CID" ]; then
-            CID=$(docker ps --format "table {{.ID}}\t{{.Names}}" | awk -v pattern="^$USER_SELECTION" '$1 ~ pattern {print $1; exit}')
-        fi
-        if [ -z "$CID" ]; then
-            CID=$(docker ps --filter "name=$USER_SELECTION" --format "{{.ID}}" | head -n 1)
-        fi
-    else
-        CID=$(echo "$MATCHING_CONTAINERS" | awk '{print $1}')
-    fi
-
-    if [ -z "$CID" ]; then
-        echo "❌ 未找到匹配的容器"
+        echo "❌ 未找到容器，请检查输入的ID"
         return
     fi
 
-    # 获取容器信息
-    if ! CNAME=$(docker inspect --format='{{.Name}}' "$CID" 2>/dev/null | sed 's#^/##'); then
-        echo "❌ 无法获取容器 $CID 的信息"
-        return
-    fi
+    CNAME=$(docker inspect --format='{{.Name}}' "$CID" | sed 's#^/##')
     IMAGE=$(docker inspect --format='{{.Config.Image}}' "$CID")
+    OLD_IMAGE_ID=$(docker inspect --format='{{.Image}}' "$CID")  # 获取当前镜像ID
 
-    echo "✅ 选中容器: $CNAME (当前镜像: $IMAGE)"
+    echo "✅ 选中容器: $CNAME (镜像: $IMAGE)"
 
-    # 提示用户输入版本号并验证
-    read -p "请输入目标镜像版本号（直接回车拉取最新版本）: " IMAGE_VERSION
-    if [ -n "$IMAGE_VERSION" ] && ! echo "$IMAGE_VERSION" | grep -qE '^[a-zA-Z0-9._-]+$'; then
-        echo "❌ 无效的版本号格式"
+    # 询问是否指定版本
+    echo "是否指定版本？(y/n，默认拉取最新版本)"
+    read -r specify_version
+    if [[ "$specify_version" == "y" ]]; then
+        read -p "请输入版本号 (例如: 1.2.3, alpine, 直接回车使用latest): " VERSION
+        # 如果用户未输入版本号，则使用latest
+        if [ -z "$VERSION" ]; then
+            VERSION="latest"
+            echo "ℹ️  未输入版本号，使用默认版本: latest"
+        fi
+        # 从原镜像中提取镜像名称（去掉版本部分）
+        BASE_IMAGE=$(echo "$IMAGE" | cut -d: -f1)
+        IMAGE_TO_PULL="${BASE_IMAGE}:${VERSION}"
+        echo "ℹ️  将拉取指定版本: $IMAGE_TO_PULL"
+
+        # 记录是否是指定版本（非latest）
+        IS_SPECIFIC_VERSION=1
+        if [[ "$VERSION" == "latest" ]]; then
+            IS_SPECIFIC_VERSION=0
+        fi
+    else
+        # 确保镜像名称包含标签
+        if [[ "$IMAGE" != *:* ]]; then
+            IMAGE_TO_PULL="${IMAGE}:latest"
+        else
+            IMAGE_TO_PULL="$IMAGE"
+        fi
+        echo "ℹ️  将拉取最新版本: $IMAGE_TO_PULL"
+        IS_SPECIFIC_VERSION=0
+    fi
+
+    echo "⬇️ 拉取镜像..."
+    PULL_OUTPUT=$(docker pull "$IMAGE_TO_PULL" 2>&1)
+    echo "$PULL_OUTPUT"
+
+    # 检查是否已是最新版本
+    if check_image_up_to_date "$IMAGE_TO_PULL" "$PULL_OUTPUT" && [ $IS_SPECIFIC_VERSION -eq 0 ]; then
+        echo "✅ 镜像已是最新版本，无需更新"
         return
     fi
 
-    # 提取基础镜像名称（去掉标签部分）
-    BASE_IMAGE="${IMAGE%:*}"
-    if [ -z "$IMAGE_VERSION" ]; then
-        TARGET_IMAGE="$BASE_IMAGE:latest"
-    else
-        TARGET_IMAGE="$BASE_IMAGE:$IMAGE_VERSION"
-    fi
-    echo "🔄 目标镜像: $TARGET_IMAGE"
+    echo "📥 获取原始启动参数..."
+    ORIG_CMD=$(docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+        assaflavie/runlike "$CID")
 
-    # 检查 Watchtower 镜像
-    if ! docker image inspect containrrr/watchtower >/dev/null 2>&1; then
-        echo "🔄 拉取 Watchtower 镜像..."
-        if ! docker pull containrrr/watchtower; then
-            echo "❌ 无法拉取 Watchtower 镜像"
-            return
-        fi
+    if [ -z "$ORIG_CMD" ]; then
+        echo "❌ runlike 获取启动命令失败"
+        return
     fi
 
-    # 首先检查目标镜像是否存在本地，如果不存在则拉取
-    if ! docker image inspect "$TARGET_IMAGE" >/dev/null 2>&1; then
-        echo "🔄 拉取目标镜像: $TARGET_IMAGE"
-        if ! docker pull "$TARGET_IMAGE"; then
-            echo "❌ 无法拉取镜像 $TARGET_IMAGE"
-            return
-        fi
-    fi
+    # 替换镜像名称
+    NEW_CMD=$(echo "$ORIG_CMD" | sed "s|$IMAGE|$IMAGE_TO_PULL|")
 
-    # 使用 Watchtower 检查更新（不使用 --image 参数，让 Watchtower 处理容器本身的镜像）
-    echo "🔍 检查镜像更新..."
-    MONITOR_OUTPUT=$(docker run --rm \
-        -v /var/run/docker.sock:/var/run/docker.sock \
-        containrrr/watchtower \
-        --monitor-only \
-        --run-once \
-        "$CNAME" 2>&1)
+    echo "🛑 停止并删除旧容器..."
+    docker rm -f "$CID"
 
-    echo "$MONITOR_OUTPUT"
+    echo "🚀 启动新容器..."
+    eval "$NEW_CMD"
 
-    # 检查是否需要更新
-    if echo "$MONITOR_OUTPUT" | grep -q "No updates found"; then
-        echo "✅ 容器 $CNAME 已是最新版本，无需更新"
-        # 但用户可能指定了特定版本，需要检查是否需要强制更新
-        CURRENT_TAG="${IMAGE##*:}"
-        if [ -n "$IMAGE_VERSION" ] && [ "$CURRENT_TAG" != "$IMAGE_VERSION" ]; then
-            echo "⚠️  当前使用标签: $CURRENT_TAG, 目标标签: $IMAGE_VERSION"
-            read -p "是否强制更新到指定版本? (y/N): " FORCE_UPDATE
-            if [ "$FORCE_UPDATE" = "y" ] || [ "$FORCE_UPDATE" = "Y" ]; then
-                # 执行强制更新
-                echo "⚡ 强制更新到指定版本..."
-                WATCHTOWER_OUTPUT=$(docker run --rm \
-                    -v /var/run/docker.sock:/var/run/docker.sock \
-                    containrrr/watchtower \
-                    --cleanup \
-                    --run-once \
-                    "$CNAME" 2>&1)
-                echo "$WATCHTOWER_OUTPUT"
-                echo "✅ 容器 $CNAME 已更新到指定版本"
+    if [ $? -eq 0 ]; then
+        echo "✅ 容器 $CNAME 已更新到版本: $IMAGE_TO_PULL"
+
+        # 删除旧镜像（如果新镜像成功启动）
+        echo "🧹 清理旧镜像..."
+        NEW_IMAGE_ID=$(docker inspect --format='{{.Image}}' $(docker ps -q --filter "name=$CNAME") 2>/dev/null)
+        if [ -n "$NEW_IMAGE_ID" ] && [ "$OLD_IMAGE_ID" != "$NEW_IMAGE_ID" ]; then
+            # 检查是否有其他容器使用旧镜像
+            if [ -z "$(docker ps -a -q --filter ancestor="$OLD_IMAGE_ID" | grep -v "$CID")" ]; then
+                docker rmi "$OLD_IMAGE_ID" 2>/dev/null && echo "✅ 旧镜像已删除" || echo "⚠️ 无法删除旧镜像，可能仍被其他容器使用"
             else
-                echo "❌ 取消更新"
+                echo "⚠️ 旧镜像仍被其他容器使用，跳过删除"
             fi
         fi
-        return
-    elif echo "$MONITOR_OUTPUT" | grep -q "Found new.*image for"; then
-        echo "⚡ 发现新版本，开始更新..."
-        # 执行更新
-        WATCHTOWER_OUTPUT=$(docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            containrrr/watchtower \
-            --cleanup \
-            --run-once \
-            "$CNAME" 2>&1)
-        echo "$WATCHTOWER_OUTPUT"
-        echo "✅ 容器 $CNAME 更新成功"
     else
-        echo "⚠️ 检查更新状态不明"
-        echo "[$(date)] 检查容器 $CNAME 更新" >> /var/log/container_update.log
-        echo "$MONITOR_OUTPUT" >> /var/log/container_update.log
+        echo "❌ 容器启动失败，请检查输出"
     fi
+
+    echo "🧹 清理 runlike 镜像..."
+    docker rmi -f assaflavie/runlike >/dev/null 2>&1
 }
 
 # 停止容器
