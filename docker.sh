@@ -254,7 +254,7 @@ setup_watchtower() {
             return
         fi
         echo "🛑 停止并删除现有 Watchtower 容器..."
-        docker rm -f $WATCHTOWER_CONTAINER
+        docker rm -f "$WATCHTOWER_CONTAINER"
     fi
 
     echo ""
@@ -262,7 +262,23 @@ setup_watchtower() {
     docker ps --format "table {{.Names}}\t{{.Image}}"
     echo ""
     echo "💡 请输入要自动更新的容器名称（多个容器用空格分隔，输入'all'表示所有容器）"
-    read -p "容器名称: " CONTAINERS
+    read -r -p "容器名称: " CONTAINERS
+    # 验证容器名
+    if [[ "$CONTAINERS" != "all" ]]; then
+        VALID_CONTAINERS=""
+        for c in $CONTAINERS; do
+            if docker ps --format '{{.Names}}' | grep -qx "$c"; then
+                VALID_CONTAINERS="$VALID_CONTAINERS $c"
+            else
+                echo "⚠️ 跳过无效容器名: $c"
+            fi
+        done
+        if [ -z "$VALID_CONTAINERS" ] && [ -n "$CONTAINERS" ]; then
+            echo "❌ 没有有效的容器名，请检查输入"
+            return
+        fi
+        CONTAINERS="$VALID_CONTAINERS"
+    fi
 
     echo ""
     echo "⏰ 请选择更新检查频率："
@@ -270,7 +286,7 @@ setup_watchtower() {
     echo "2. 每天检查一次（凌晨2点）"
     echo "3. 每周检查一次（周日凌晨2点）"
     echo "4. 自定义 cron 表达式"
-    read -p "请选择 (1-4): " FREQ_CHOICE
+    read -r -p "请选择 (1-4): " FREQ_CHOICE
 
     SCHEDULE=""
     INTERVAL=""
@@ -282,6 +298,11 @@ setup_watchtower() {
         4)
             echo "📝 请输入自定义 cron 表达式（格式: '秒 分 时 日 月 周'，例如 '0 0 2 * * *'）"
             read -r -p "cron 表达式: " SCHEDULE
+            # 验证 cron 表达式（简单检查是否包含6个字段）
+            if [[ ! "$SCHEDULE" =~ ^[0-9*]+[[:space:]][0-9*]+[[:space:]][0-9*]+[[:space:]][0-9*]+[[:space:]][0-9*]+[[:space:]][0-9*]+$ ]]; then
+                echo "❌ 无效的 cron 表达式，请使用6字段格式（如 '0 0 2 * * *'）"
+                return
+            fi
             ;;
         *)
             echo "❌ 无效选择，使用默认值: 每天凌晨2点"
@@ -295,9 +316,9 @@ setup_watchtower() {
     NOTIFY_FLAGS=""
     if [[ "$NOTIFY_CHOICE" == "y" ]]; then
         echo "📧 请输入通知方式（可选: email, slack, gotify, teams等）"
-        read -p "通知方式: " NOTIFY_TYPE
+        read -r -p "通知方式: " NOTIFY_TYPE
         echo "🔑 请输入通知所需的配置参数（格式: key1=value1,key2=value2，例如 hook_url=https://example.com,identifier=myid）"
-        read -p "通知配置: " NOTIFY_OPTS
+        read -r -p "通知配置: " NOTIFY_OPTS
         if [ -n "$NOTIFY_OPTS" ]; then
             IFS=',' read -r -a opts <<< "$NOTIFY_OPTS"
             for opt in "${opts[@]}"; do
@@ -319,7 +340,7 @@ setup_watchtower() {
 
     echo ""
     echo "📋 即将创建的 Watchtower 配置："
-    echo "📦 监控容器: $CONTAINERS"
+    echo "📦 监控容器: ${CONTAINERS:-all}"
     if [[ -n "$INTERVAL" ]]; then
         echo "⏰ 检查频率: 每 $((INTERVAL / 60)) 分钟"
     else
@@ -351,20 +372,12 @@ setup_watchtower() {
     WATCHTOWER_CMD="$WATCHTOWER_CMD $CLEANUP_FLAG $NOTIFY_FLAGS"
 
     # 添加要监控的容器，只允许有效容器名
-    if [[ "$CONTAINERS" != "all" ]]; then
-        VALID_CONTAINERS=""
-        for c in $CONTAINERS; do
-            if docker ps --format '{{.Names}}' | grep -qx "$c"; then
-                VALID_CONTAINERS="$VALID_CONTAINERS $c"
-            else
-                echo "⚠️ 跳过非容器名: $c"
-            fi
-        done
-        # 将容器名称添加到命令末尾（不是作为schedule参数）
-        WATCHTOWER_CMD="$WATCHTOWER_CMD $VALID_CONTAINERS"
+    if [[ "$CONTAINERS" != "all" ]] && [ -n "$CONTAINERS" ]; then
+        WATCHTOWER_CMD="$WATCHTOWER_CMD $CONTAINERS"
     fi
 
     echo "🚀 启动 Watchtower 容器..."
+    echo "执行命令: $WATCHTOWER_CMD"
     eval "$WATCHTOWER_CMD"
 
     if [ $? -eq 0 ]; then
