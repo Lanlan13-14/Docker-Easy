@@ -277,15 +277,15 @@ setup_watchtower() {
 
     case $FREQ_CHOICE in
         1) INTERVAL=3600 ;;  # 每小时
-        2) SCHEDULE="0 2 * * *" ;;  # 每天凌晨2点
-        3) SCHEDULE="0 2 * * 0" ;;  # 每周日凌晨2点
+        2) SCHEDULE="0 0 2 * * *" ;;  # 每天凌晨2点（6字段）
+        3) SCHEDULE="0 0 2 * * 0" ;;  # 每周日凌晨2点（6字段）
         4)
-            echo "📝 请输入自定义 cron 表达式（格式: '分 时 日 月 周'）"
-            read -p "cron 表达式: " SCHEDULE
+            echo "📝 请输入自定义 cron 表达式（格式: '秒 分 时 日 月 周'，例如 '0 0 2 * * *'）"
+            read -r -p "cron 表达式: " SCHEDULE
             ;;
         *)
             echo "❌ 无效选择，使用默认值: 每天凌晨2点"
-            SCHEDULE="0 2 * * *"
+            SCHEDULE="0 0 2 * * *"
             ;;
     esac
 
@@ -296,9 +296,17 @@ setup_watchtower() {
     if [[ "$NOTIFY_CHOICE" == "y" ]]; then
         echo "📧 请输入通知方式（可选: email, slack, gotify, teams等）"
         read -p "通知方式: " NOTIFY_TYPE
-        echo "🔑 请输入通知所需的配置参数（格式: key1=value1,key2=value2）"
+        echo "🔑 请输入通知所需的配置参数（格式: key1=value1,key2=value2，例如 hook_url=https://example.com,identifier=myid）"
         read -p "通知配置: " NOTIFY_OPTS
-        NOTIFY_FLAGS="--notification-$NOTIFY_TYPE --$NOTIFY_TYPE-$NOTIFY_OPTS"
+        if [ -n "$NOTIFY_OPTS" ]; then
+            IFS=',' read -r -a opts <<< "$NOTIFY_OPTS"
+            for opt in "${opts[@]}"; do
+                key=${opt%%=*}
+                value=${opt#*=}
+                NOTIFY_FLAGS="$NOTIFY_FLAGS --$NOTIFY_TYPE-$key \"$value\""
+            done
+        fi
+        NOTIFY_FLAGS="--notification-$NOTIFY_TYPE $NOTIFY_FLAGS"
     fi
 
     echo ""
@@ -357,38 +365,13 @@ setup_watchtower() {
     fi
 
     echo "🚀 启动 Watchtower 容器..."
-    eval $WATCHTOWER_CMD
+    eval "$WATCHTOWER_CMD"
 
     if [ $? -eq 0 ]; then
         echo "✅ Watchtower 自动更新服务已启动"
         echo "📊 使用 'docker logs watchtower' 查看日志"
     else
         echo "❌ Watchtower 启动失败"
-    fi
-}
-
-# 删除 Watchtower 自动更新
-remove_watchtower() {
-    if ! command -v docker &>/dev/null; then
-        echo "❌ 未检测到 docker，请先安装"
-        return
-    fi
-
-    echo "🔍 查找 Watchtower 容器..."
-    WATCHTOWER_CONTAINER=$(docker ps -a --filter "name=watchtower" --format "{{.ID}}")
-
-    if [ -z "$WATCHTOWER_CONTAINER" ]; then
-        echo "ℹ️ 未找到 Watchtower 容器"
-        return
-    fi
-
-    echo "🛑 停止并删除 Watchtower 容器..."
-    docker rm -f $WATCHTOWER_CONTAINER
-
-    if [ $? -eq 0 ]; then
-        echo "✅ Watchtower 自动更新服务已删除"
-    else
-        echo "❌ 删除 Watchtower 失败"
     fi
 }
 
