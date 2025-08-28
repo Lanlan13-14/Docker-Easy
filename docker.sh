@@ -342,9 +342,17 @@ setup_watchtower() {
 
     WATCHTOWER_CMD="$WATCHTOWER_CMD $CLEANUP_FLAG $NOTIFY_FLAGS"
 
-    # 添加要监控的容器
+    # 添加要监控的容器，只允许有效容器名
     if [[ "$CONTAINERS" != "all" ]]; then
-        WATCHTOWER_CMD="$WATCHTOWER_CMD $CONTAINERS"
+        VALID_CONTAINERS=""
+        for c in $CONTAINERS; do
+            if docker ps --format '{{.Names}}' | grep -qx "$c"; then
+                VALID_CONTAINERS="$VALID_CONTAINERS $c"
+            else
+                echo "⚠️ 跳过非容器名: $c"
+            fi
+        done
+        WATCHTOWER_CMD="$WATCHTOWER_CMD $VALID_CONTAINERS"
     fi
 
     echo "🚀 启动 Watchtower 容器..."
@@ -355,6 +363,31 @@ setup_watchtower() {
         echo "📊 使用 'docker logs watchtower' 查看日志"
     else
         echo "❌ Watchtower 启动失败"
+    fi
+}
+
+# 删除 Watchtower 自动更新
+remove_watchtower() {
+    if ! command -v docker &>/dev/null; then
+        echo "❌ 未检测到 docker，请先安装"
+        return
+    fi
+
+    echo "🔍 查找 Watchtower 容器..."
+    WATCHTOWER_CONTAINER=$(docker ps -a --filter "name=watchtower" --format "{{.ID}}")
+
+    if [ -z "$WATCHTOWER_CONTAINER" ]; then
+        echo "ℹ️ 未找到 Watchtower 容器"
+        return
+    fi
+
+    echo "🛑 停止并删除 Watchtower 容器..."
+    docker rm -f $WATCHTOWER_CONTAINER
+
+    if [ $? -eq 0 ]; then
+        echo "✅ Watchtower 自动更新服务已删除"
+    else
+        echo "❌ 删除 Watchtower 失败"
     fi
 }
 
