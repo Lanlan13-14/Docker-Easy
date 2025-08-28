@@ -69,18 +69,31 @@ update_container() {
         return
     fi
 
-    # 清理容器名称或 ID 输入
-    CONTAINER_NAME=$(echo "$CONTAINER_NAME" | tr -d '\n\r' | sed 's/[^a-zA-Z0-9._-]//g')
+    # 清理容器名称或 ID 输入（仅移除换行符）
+    CONTAINER_NAME=$(echo "$CONTAINER_NAME" | tr -d '\n\r')
 
-    # 使用模糊匹配查找容器（支持名称和 ID）
-    MATCHING_CONTAINERS=$(docker ps --filter "name=$CONTAINER_NAME" --filter "id=$CONTAINER_NAME" --format "{{.ID}}\t{{.Names}}")
+    # 尝试精确匹配容器 ID
+    CID=$(docker ps --filter "id=$CONTAINER_NAME" --format "{{.ID}}" | head -n 1)
+    if [ -n "$CID" ]; then
+        # ID 匹配成功，直接使用
+        MATCHING_CONTAINERS=$(docker ps --filter "id=$CID" --format "{{.ID}}\t{{.Names}}")
+    else
+        # ID 匹配失败，尝试名称模糊匹配
+        MATCHING_CONTAINERS=$(docker ps --filter "name=$CONTAINER_NAME" --format "{{.ID}}\t{{.Names}}")
+    fi
+
     COUNT=$(echo "$MATCHING_CONTAINERS" | wc -l | awk '{print $1}')
     if [ "$COUNT" -gt 1 ]; then
         echo "找到多个匹配的容器："
         echo "$MATCHING_CONTAINERS"
         read -p "请输入要更新的容器 ID 或名称 (支持模糊匹配): " USER_SELECTION
-        USER_SELECTION=$(echo "$USER_SELECTION" | tr -d '\n\r' | sed 's/[^a-zA-Z0-9._-]//g')
-        CID=$(docker ps --filter "name=$USER_SELECTION" --filter "id=$USER_SELECTION" --format "{{.ID}}" | head -n 1)
+        USER_SELECTION=$(echo "$USER_SELECTION" | tr -d '\n\r')
+        # 尝试精确匹配二次输入的 ID
+        CID=$(docker ps --filter "id=$USER_SELECTION" --format "{{.ID}}" | head -n 1)
+        if [ -z "$CID" ]; then
+            # ID 匹配失败，尝试名称模糊匹配
+            CID=$(docker ps --filter "name=$USER_SELECTION" --format "{{.ID}}" | head -n 1)
+        fi
     else
         CID=$(echo "$MATCHING_CONTAINERS" | awk '{print $1}')
     fi
