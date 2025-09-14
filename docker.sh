@@ -150,39 +150,44 @@ update_container() {
     docker rmi -f assaflavie/runlike >/dev/null 2>&1
 }
 
-# 停止容器
+# 停止容器（支持批量）
 stop_container() {
     docker ps --format "table {{.ID}}\t{{.Names}}"
-    read -p "请输入要停止的容器ID: " CID
-    docker stop "$CID" && echo "✅ 容器已停止"
+    read -p "请输入要停止的容器ID（可多个，空格分隔）: " CIDs
+    [ -z "$CIDs" ] && echo "⚠️ 未输入容器ID" && return 1
+    docker stop $CIDs && echo "✅ 容器已停止"
 }
 
-# 强制停止容器
+# 强制停止容器（支持批量）
 force_stop_container() {
     docker ps --format "table {{.ID}}\t{{.Names}}"
-    read -p "请输入要强制停止的容器ID: " CID
-    docker kill "$CID" && echo "✅ 容器已强制停止"
+    read -p "请输入要强制停止的容器ID（可多个，空格分隔）: " CIDs
+    [ -z "$CIDs" ] && echo "⚠️ 未输入容器ID" && return 1
+    docker kill $CIDs && echo "✅ 容器已强制停止"
 }
 
-# 启动容器
+# 启动容器（支持批量）
 start_container() {
     docker ps -a --format "table {{.ID}}\t{{.Names}}\t{{.Status}}"
-    read -p "请输入要启动的容器ID: " CID
-    docker start "$CID" && echo "✅ 容器已启动"
+    read -p "请输入要启动的容器ID（可多个，空格分隔）: " CIDs
+    [ -z "$CIDs" ] && echo "⚠️ 未输入容器ID" && return 1
+    docker start $CIDs && echo "✅ 容器已启动"
 }
 
-# 重启容器
+# 重启容器（支持批量）
 restart_container() {
     docker ps --format "table {{.ID}}\t{{.Names}}"
-    read -p "请输入要重启的容器ID: " CID
-    docker restart "$CID" && echo "✅ 容器已重启"
+    read -p "请输入要重启的容器ID（可多个，空格分隔）: " CIDs
+    [ -z "$CIDs" ] && echo "⚠️ 未输入容器ID" && return 1
+    docker restart $CIDs && echo "✅ 容器已重启"
 }
 
-# 删除容器
+# 删除容器（支持批量）
 remove_container() {
     docker ps -a --format "table {{.ID}}\t{{.Names}}\t{{.Status}}"
-    read -p "请输入要删除的容器ID: " CID
-    docker rm -f "$CID" && echo "✅ 容器已删除"
+    read -p "请输入要删除的容器ID（可多个，空格分隔）: " CIDs
+    [ -z "$CIDs" ] && echo "⚠️ 未输入容器ID" && return 1
+    docker rm -f $CIDs && echo "✅ 容器已删除"
 }
 
 # 删除镜像（支持批量）
