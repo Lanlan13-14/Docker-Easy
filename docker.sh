@@ -255,11 +255,15 @@ remove_container() {
     batch_operation remove
 }
 
-# 删除镜像
+# 删除镜像（支持批量）
 remove_image() {
     docker images --format "table {{.ID}}\t{{.Repository}}\t{{.Tag}}"
-    read -p "请输入要删除的镜像ID: " IID
-    docker rmi -f "$IID" && echo "✅ 镜像已删除"
+    read -p "请输入要删除的镜像ID（可输入多个，空格分隔）: " IIDs
+    if [ -z "$IIDs" ]; then
+        echo "⚠️ 未输入任何镜像ID"
+        return 1
+    fi
+    docker rmi -f $IIDs && echo "✅ 镜像已删除"
 }
 
 # Docker 服务管理
