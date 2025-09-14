@@ -518,8 +518,9 @@ update_script() {
         if bash -n "$tmpfile" 2>/dev/null; then
             chmod +x "$tmpfile"
             sudo mv "$tmpfile" "$SCRIPT_PATH"
-            echo "✅ docker-easy 脚本已更新完成！"
-
+            # 语法无误，自动删除备份
+            sudo rm -f "$BACKUP_PATH"
+            echo "✅ docker-easy 脚本已更新完成，备份已自动删除"
             # 询问是否重新加载脚本
             echo "是否立即重新加载脚本？(y/n)"
             read -r reload_choice
@@ -529,9 +530,6 @@ update_script() {
             else
                 echo "ℹ️ 下次使用请输入: sudo docker-easy"
             fi
-
-            # 删除备份
-            sudo rm -f "$BACKUP_PATH"
         else
             echo "❌ 下载的脚本语法有误，恢复备份..."
             sudo mv "$BACKUP_PATH" "$SCRIPT_PATH"
