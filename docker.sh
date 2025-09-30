@@ -190,6 +190,45 @@ remove_container() {
     docker rm -f $CIDs && echo "✅ 容器已删除"
 }
 
+# 进入容器
+enter_container() {
+    docker ps --format "table {{.ID}}\t{{.Names}}"
+    read -p "请输入要进入的容器名称: " CONTAINER_NAME
+    if [ -z "$CONTAINER_NAME" ]; then
+        echo "⚠️ 未输入容器名称"
+        return 1
+    fi
+    CID=$(docker ps -q -f name="$CONTAINER_NAME")
+    if [ -z "$CID" ]; then
+        echo "❌ 未找到运行中的容器: $CONTAINER_NAME"
+        echo "请确保容器正在运行，并检查名称是否正确"
+        return 1
+    fi
+    FULL_ID=$(docker ps --filter "id=$CID" --format "{{.ID}}")
+    echo "✅ 进入容器 $CONTAINER_NAME (ID: $FULL_ID)"
+    docker exec -it "$CONTAINER_NAME" /bin/bash || docker exec -it "$CONTAINER_NAME" /bin/sh
+}
+
+# 查看容器日志
+view_container_logs() {
+    docker ps -a --format "table {{.ID}}\t{{.Names}}\t{{.Status}}"
+    read -p "请输入要查看日志的容器名称: " CONTAINER_NAME
+    if [ -z "$CONTAINER_NAME" ]; then
+        echo "⚠️ 未输入容器名称"
+        return 1
+    fi
+    CID=$(docker ps -aq -f name="$CONTAINER_NAME")
+    if [ -z "$CID" ]; then
+        echo "❌ 未找到容器: $CONTAINER_NAME"
+        return 1
+    fi
+    FULL_ID=$(docker ps -a --filter "id=$CID" --format "{{.ID}}")
+    echo "📊 查看容器 $CONTAINER_NAME (ID: $FULL_ID) 的日志:"
+    echo "----------------------------------------"
+    docker logs "$CONTAINER_NAME"
+    echo "----------------------------------------"
+}
+
 # 删除镜像（支持批量）
 remove_image() {
     docker images --format "table {{.ID}}\t{{.Repository}}\t{{.Tag}}"
@@ -230,6 +269,8 @@ container_operations() {
         echo "3. 强制停止容器"
         echo "4. 重启容器"
         echo "5. 删除容器"
+        echo "6. 进入容器"
+        echo "7. 查看容器日志"
         echo "0. 返回主菜单"
         read -p "请选择操作: " choice
         case $choice in
@@ -238,6 +279,8 @@ container_operations() {
             3) force_stop_container ;;
             4) restart_container ;;
             5) remove_container ;;
+            6) enter_container ;;
+            7) view_container_logs ;;
             0) return ;;
             *) echo "❌ 无效选择" ;;
         esac
@@ -395,6 +438,18 @@ setup_watchtower() {
     else
         echo "❌ Watchtower 启动失败"
     fi
+}
+
+# 删除 Watchtower
+remove_watchtower() {
+    echo "🔍 检查 Watchtower 容器..."
+    WATCHTOWER_CONTAINER=$(docker ps -a --filter "name=watchtower" --format "{{.ID}}")
+    if [ -z "$WATCHTOWER_CONTAINER" ]; then
+        echo "ℹ️ 未找到 Watchtower 容器"
+        return
+    fi
+    echo "🛑 停止并删除 Watchtower 容器..."
+    docker rm -f "$WATCHTOWER_CONTAINER" && echo "✅ Watchtower 已删除" || echo "❌ 删除失败"
 }
 
 # Watchtower 管理子菜单
