@@ -333,6 +333,21 @@ setup_watchtower() {
     fi
 
     echo ""
+    echo "🔧 Docker API 版本设置："
+    echo "当前默认 Docker API 版本为 1.44"
+    echo "是否使用默认版本？(y/n)"
+    read -r USE_DEFAULT_API
+    DOCKER_API_VERSION="1.44"
+    if [[ "$USE_DEFAULT_API" != "y" ]]; then
+        read -r -p "请输入 Docker API 版本 (例如 1.41): " DOCKER_API_VERSION
+        # 简单验证 API 版本格式
+        if [[ ! "$DOCKER_API_VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            echo "⚠️ API 版本格式不正确，使用默认版本 1.44"
+            DOCKER_API_VERSION="1.44"
+        fi
+    fi
+
+    echo ""
     echo "⏰ 请选择更新检查频率："
     echo "1. 每小时检查一次"
     echo "2. 每天检查一次（凌晨2点）"
@@ -363,26 +378,6 @@ setup_watchtower() {
     esac
 
     echo ""
-    echo "🔔 是否接收更新通知？(y/n)"
-    read -r NOTIFY_CHOICE
-    NOTIFY_FLAGS=""
-    if [[ "$NOTIFY_CHOICE" == "y" ]]; then
-        echo "📧 请输入通知方式（可选: email, slack, gotify, teams等）"
-        read -r -p "通知方式: " NOTIFY_TYPE
-        echo "🔑 请输入通知所需的配置参数（格式: key1=value1,key2=value2，例如 hook_url=https://example.com,identifier=myid）"
-        read -r -p "通知配置: " NOTIFY_OPTS
-        if [ -n "$NOTIFY_OPTS" ]; then
-            IFS=',' read -r -a opts <<< "$NOTIFY_OPTS"
-            for opt in "${opts[@]}"; do
-                key=${opt%%=*}
-                value=${opt#*=}
-                NOTIFY_FLAGS="$NOTIFY_FLAGS --$NOTIFY_TYPE-$key \"$value\""
-            done
-        fi
-        NOTIFY_FLAGS="--notification-$NOTIFY_TYPE $NOTIFY_FLAGS"
-    fi
-
-    echo ""
     echo "🧹 更新后是否清理旧镜像？(y/n)"
     read -r CLEANUP_CHOICE
     CLEANUP_FLAG=""
@@ -393,12 +388,12 @@ setup_watchtower() {
     echo ""
     echo "📋 即将创建的 Watchtower 配置："
     echo "📦 监控容器: ${CONTAINERS:-all}"
+    echo "🔧 Docker API 版本: $DOCKER_API_VERSION"
     if [[ -n "$INTERVAL" ]]; then
-        echo "⏰ 检查频率: 每 $((INTERVAL / 60)) 分钟"
+        echo "⏰ 检查频率: 每 $((INTERVAL / 3600)) 小时"
     else
         echo "⏰ 检查频率: $SCHEDULE"
     fi
-    echo "🔔 通知: $( [ -n "$NOTIFY_FLAGS" ] && echo "是" || echo "否" )"
     echo "🧹 清理旧镜像: $( [ -n "$CLEANUP_FLAG" ] && echo "是" || echo "否" )"
     echo ""
     echo "是否确认创建？(y/n)"
@@ -412,6 +407,7 @@ setup_watchtower() {
     WATCHTOWER_CMD="docker run -d \
         --name watchtower \
         --restart unless-stopped \
+        -e DOCKER_API_VERSION=$DOCKER_API_VERSION \
         -v /var/run/docker.sock:/var/run/docker.sock \
         containrrr/watchtower"
 
@@ -421,9 +417,9 @@ setup_watchtower() {
         WATCHTOWER_CMD="$WATCHTOWER_CMD --schedule \"$SCHEDULE\""
     fi
 
-    WATCHTOWER_CMD="$WATCHTOWER_CMD $CLEANUP_FLAG $NOTIFY_FLAGS"
+    WATCHTOWER_CMD="$WATCHTOWER_CMD $CLEANUP_FLAG"
 
-    # 添加要监控的容器，只允许有效容器名
+    # 添加要监控的容器
     if [[ "$CONTAINERS" != "all" ]] && [ -n "$CONTAINERS" ]; then
         WATCHTOWER_CMD="$WATCHTOWER_CMD $CONTAINERS"
     fi
@@ -434,7 +430,10 @@ setup_watchtower() {
 
     if [ $? -eq 0 ]; then
         echo "✅ Watchtower 自动更新服务已启动"
-        echo "📊 使用 'docker logs watchtower' 查看日志"
+        echo "📊 使用以下命令查看日志："
+        echo "   docker logs watchtower"
+        echo "📊 查看运行状态："
+        echo "   docker ps | grep watchtower"
     else
         echo "❌ Watchtower 启动失败"
     fi
