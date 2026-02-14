@@ -333,17 +333,66 @@ setup_watchtower() {
     fi
 
     echo ""
-    echo "🔧 Docker API 版本设置："
-    echo "当前默认 Docker API 版本为 1.44"
-    echo "是否使用默认版本？(y/n)"
-    read -r USE_DEFAULT_API
-    DOCKER_API_VERSION="1.44"
-    if [[ "$USE_DEFAULT_API" != "y" ]]; then
-        read -r -p "请输入 Docker API 版本 (例如 1.41): " DOCKER_API_VERSION
-        # 简单验证 API 版本格式
-        if [[ ! "$DOCKER_API_VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
-            echo "⚠️ API 版本格式不正确，使用默认版本 1.44"
-            DOCKER_API_VERSION="1.44"
+    echo "🔧 检测 Docker API 版本信息..."
+    
+    # 获取 Docker API 版本信息
+    DOCKER_VERSION_INFO=$(docker version --format '{{.Server.APIVersion}} {{.Server.MinAPIVersion}}' 2>/dev/null)
+    if [ $? -ne 0 ] || [ -z "$DOCKER_VERSION_INFO" ]; then
+        echo "⚠️ 无法检测 Docker API 版本信息，使用默认版本"
+        CURRENT_API="1.44"
+        MIN_API="1.44"
+        MAX_API="1.44"
+    else
+        CURRENT_API=$(echo "$DOCKER_VERSION_INFO" | awk '{print $1}')
+        MIN_API=$(echo "$DOCKER_VERSION_INFO" | awk '{print $2}')
+        # 最大 API 版本就是当前 API 版本
+        MAX_API="$CURRENT_API"
+    fi
+    
+    echo "📊 Docker API 版本信息："
+    echo "   当前版本: $CURRENT_API"
+    echo "   最小支持: $MIN_API"
+    echo "   最大支持: $MAX_API"
+    
+    # 智能选择 API 版本
+    DEFAULT_TARGET="1.44"
+    if [ "$(echo "$MIN_API > 1.44" | bc -l 2>/dev/null)" = "1" ] || [ "$MIN_API" = "1.44" ] && [ "$(echo "$MIN_API >= 1.44" | bc -l 2>/dev/null)" = "1" ]; then
+        # 如果最小 API >= 1.44，使用最小 API
+        TARGET_API="$MIN_API"
+        echo "✅ 系统最小 API ($MIN_API) >= 1.44，使用最小 API 版本"
+    else
+        if [ "$(echo "$MAX_API < 1.44" | bc -l 2>/dev/null)" = "1" ]; then
+            # 如果最大 API < 1.44，使用最大 API
+            TARGET_API="$MAX_API"
+            echo "⚠️ 系统最大 API ($MAX_API) < 1.44，使用最大 API 版本以确保兼容性"
+        else
+            # 默认使用 1.44
+            TARGET_API="1.44"
+            echo "ℹ️ 使用默认 API 版本 1.44"
+        fi
+    fi
+    
+    echo "🎯 推荐使用的 Docker API 版本: $TARGET_API"
+    echo ""
+    echo "是否使用推荐的 API 版本？(y/n)"
+    read -r USE_RECOMMENDED_API
+    
+    DOCKER_API_VERSION="$TARGET_API"
+    if [[ "$USE_RECOMMENDED_API" != "y" ]]; then
+        echo "请输入自定义 Docker API 版本 (当前支持范围: $MIN_API - $MAX_API)"
+        read -r -p "Docker API 版本: " CUSTOM_API
+        
+        # 验证自定义版本是否在支持范围内
+        if [ -n "$CUSTOM_API" ]; then
+            if [ "$(echo "$CUSTOM_API < $MIN_API" | bc -l 2>/dev/null)" = "1" ] || [ "$(echo "$CUSTOM_API > $MAX_API" | bc -l 2>/dev/null)" = "1" ]; then
+                echo "⚠️ 自定义版本不在支持范围内，使用推荐版本 $TARGET_API"
+                DOCKER_API_VERSION="$TARGET_API"
+            else
+                DOCKER_API_VERSION="$CUSTOM_API"
+            fi
+        else
+            echo "⚠️ 输入为空，使用推荐版本 $TARGET_API"
+            DOCKER_API_VERSION="$TARGET_API"
         fi
     fi
 
@@ -388,7 +437,7 @@ setup_watchtower() {
     echo ""
     echo "📋 即将创建的 Watchtower 配置："
     echo "📦 监控容器: ${CONTAINERS:-all}"
-    echo "🔧 Docker API 版本: $DOCKER_API_VERSION"
+    echo "🔧 Docker API 版本: $DOCKER_API_VERSION (范围: $MIN_API - $MAX_API)"
     if [[ -n "$INTERVAL" ]]; then
         echo "⏰ 检查频率: 每 $((INTERVAL / 3600)) 小时"
     else
